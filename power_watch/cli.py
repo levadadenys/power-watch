@@ -10,8 +10,7 @@ import time
 import urllib.error
 
 from power_watch import __version__, config, probe
-from power_watch.messages import MESSAGES
-from power_watch.state import iso
+from power_watch.messages import MESSAGES, iso
 from power_watch.telegram import Telegram, error_detail, fetch_chats
 from power_watch.watch import load_purifier, watch
 
@@ -74,11 +73,11 @@ def cmd_purifier(cfg: config.Config) -> int:
     if not loaded:
         print("power-watch: no purifier configured (or its dependency is missing, see above)", file=sys.stderr)
         return 2
-    module, dev = loaded
+    module, dev = loaded.module, loaded.device
     try:
         values = dev.read()
     except module.UnsupportedModel as e:
-        print(f"{cfg.purifier_ip}: model {e.model} has no property map in purifier.py yet")
+        print(f"{cfg.purifier_ip}: model {e.model} has no property map in power_watch/purifier.py yet")
         return 1
     except Exception as e:  # noqa: BLE001 — a diagnostic command reports, never tracebacks
         print(f"{cfg.purifier_ip}: {type(e).__name__}: {e}")
@@ -104,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--purifier", action="store_true", help="read the configured air purifier once")
     args = p.parse_args(argv)
     # One line per message, no timestamps: journald adds its own.
-    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout, force=True)
     if args.scan:
         return cmd_scan(args.scan)
     if args.probe:
