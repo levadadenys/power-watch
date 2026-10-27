@@ -13,7 +13,18 @@ import json
 import os
 
 PUBLIC_KEYS = ("power", "since", "last_on", "last_off", "last_seen", "checked")
-PERSIST_KEYS = ("power", "since", "last_on", "last_off", "last_seen", "prev_since", "prev_last_off")
+PERSIST_KEYS = (
+    "power",
+    "since",
+    "last_on",
+    "last_off",
+    "last_seen",
+    "prev_since",
+    "prev_last_off",
+    "device_id",
+    "device_cfg",
+)
+STR_KEYS = ("device_cfg",)
 
 
 def load_state(path: str, st: dict) -> list[str]:
@@ -27,7 +38,11 @@ def load_state(path: str, st: dict) -> list[str]:
         return []
     for k in PERSIST_KEYS:
         v = saved.get(k)
-        if (v in ("on", "off", "unknown")) if k == "power" else (type(v) is int):
+        if k == "power":
+            ok = v in ("on", "off", "unknown")
+        else:
+            ok = isinstance(v, str) if k in STR_KEYS else type(v) is int
+        if ok:
             st[k] = v
     outbox = saved.get("outbox")
     return [m for m in outbox if isinstance(m, str)] if isinstance(outbox, list) else []
