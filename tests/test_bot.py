@@ -25,7 +25,7 @@ def status():
 
 class Replies(unittest.TestCase):
     def test_allowed_users_get_the_status(self):
-        for text in ("/status", "/status@pi_power_watch_chiki_bot", "/start", "?", "Статус", "світло"):
+        for text in ("/status", "/status@my_power_watch_bot", "/start", "?", "Статус", "світло"):
             self.assertEqual(reply_for(msg(text), frozenset({7}), status, "en"), (7, "STATUS"), text)
         self.assertEqual(reply_for(msg("hello"), frozenset({7}), status, "en"), (7, MESSAGES["en"]["help"]))
         self.assertEqual(reply_for(msg(""), frozenset({7}), status, "en"), (7, MESSAGES["en"]["help"]))
