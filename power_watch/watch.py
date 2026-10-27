@@ -6,6 +6,8 @@ import logging
 import os
 import threading
 import time
+from types import ModuleType
+from typing import Any, NamedTuple
 
 from power_watch import probe, store
 from power_watch.bot import Commands
@@ -15,6 +17,11 @@ from power_watch.state import CLOCK_STEP_S, describe, new_state, shift_times, st
 from power_watch.telegram import Telegram
 
 log = logging.getLogger(__name__)
+
+
+class LoadedPurifier(NamedTuple):
+    module: ModuleType  # power_watch.purifier, imported only when configured
+    device: Any  # power_watch.purifier.Device
 
 
 def wait_for_clock() -> None:
@@ -34,9 +41,9 @@ def wait_for_clock() -> None:
         waited += 5
 
 
-def load_purifier(cfg: Config) -> tuple | None:
-    """(purifier module, Device) when one is configured and loadable. Optional by design: without
-    a working python3-cryptography the power watch still runs, minus the readings."""
+def load_purifier(cfg: Config) -> LoadedPurifier | None:
+    """The purifier module and its Device when one is configured and loadable. Optional by design:
+    without a working python3-cryptography the power watch still runs, minus the readings."""
     if not (cfg.purifier_ip and cfg.purifier_token):
         if cfg.purifier_ip or cfg.purifier_token:
             log.warning("power-watch: purifier needs both POWER_WATCH_PURIFIER_IP and POWER_WATCH_PURIFIER_TOKEN")
@@ -49,14 +56,17 @@ def load_purifier(cfg: Config) -> tuple | None:
         else:
             log.warning("power-watch: purifier readings off — %s: %s", type(e).__name__, e)
         return None
-    return purifier, purifier.Device(cfg.purifier_ip, cfg.purifier_token)
+    return LoadedPurifier(purifier, purifier.Device(cfg.purifier_ip, cfg.purifier_token))
 
 
 class Watch:
-    def __init__(self, cfg: Config, run_dir: str = "", state_dir: str = ""):
+    """The running service. The constructor restores the persisted state (and its unsent posts)
+    and loads the optional purifier; run() starts the Telegram threads and probes forever."""
+
+    def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.live_path = os.path.join(run_dir, "state") if run_dir else ""
-        self.persist_path = os.path.join(state_dir, "state.json") if state_dir else ""
+        self.live_path = os.path.join(cfg.run_dir, "state") if cfg.run_dir else ""
+        self.persist_path = os.path.join(cfg.state_dir, "state.json") if cfg.state_dir else ""
         self.st = new_state(int(time.time()))
         outbox = store.load_state(self.persist_path, self.st) if self.persist_path else []
         self.lock = threading.Lock()
@@ -82,8 +92,7 @@ class Watch:
         text = status_text(self.st, self.cfg.lang, self.cfg.tz, time.time(), 3 * self.cfg.interval)
         if not self.purifier:
             return text
-        module, dev = self.purifier
-        return "\n".join([text, *module.status(dev, self.cfg.lang)])
+        return "\n".join([text, *self.purifier.module.status(self.purifier.device, self.cfg.lang)])
 
     def probe_once(self, now: float) -> None:
         cfg = self.cfg
@@ -110,12 +119,12 @@ class Watch:
 
     def run(self) -> None:
         cfg = self.cfg
+        pending = len(self.tg.pending()) if self.tg else 0  # before the outbox worker starts sending
         if self.tg:
             self.tg.start()
         if cfg.token:
             # Listen even with nobody allowed yet: an unknown user's message logs the id to allow.
             Commands(self.tg or Telegram(cfg.token, ""), cfg.allowed, self.status, cfg.lang).start()
-        pending = len(self.tg.pending()) if self.tg else 0
         log.info(
             "power-watch: device %s, gateway %s:%s, every %gs, off after %s misses, channel %s, "
             "bot %s (%d user(s)), purifier %s, starting from power=%s%s",
@@ -149,5 +158,5 @@ def watch(cfg: Config) -> int:
         log.error("power-watch: POWER_WATCH_DEVICE_IP unset — nothing to watch")
         return 2  # the unit's RestartPreventExitStatus: a config error, not worth retrying
     wait_for_clock()
-    Watch(cfg, os.environ.get("RUNTIME_DIRECTORY", ""), os.environ.get("STATE_DIRECTORY", "")).run()
+    Watch(cfg).run()
     return 0
