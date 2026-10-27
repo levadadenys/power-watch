@@ -78,8 +78,10 @@ MESSAGES = {
         "status_unknown": "❔ Not known yet: the sensor hasn't answered since the watch started.",
         "help": "Send /status to see whether the power is on.",
         "cmd_status": "Is the power on?",
+        "dh": "{d} d {h} h",
         "hm": "{h} h {m} min",
         "m": "{m} min",
+        "stale": "The sensor hasn't answered for {d}.",
     },
     "uk": {
         "off": "⚡ Світла немає з {t}.",
@@ -94,8 +96,10 @@ MESSAGES = {
         "status_unknown": "❔ Поки невідомо: датчик ще не відповідав.",
         "help": "Надішліть /status, щоб дізнатися, чи є світло.",
         "cmd_status": "Чи є світло?",
+        "dh": "{d} д {h} год",
         "hm": "{h} год {m} хв",
         "m": "{m} хв",
+        "stale": "Датчик не відповідає вже {d}.",
     },
 }
 
@@ -267,6 +271,8 @@ def fmt_time(ts: float, tz: tzinfo | None, now: float) -> str:
 def fmt_duration(seconds: float, msgs: dict) -> str:
     minutes = max(1, round(seconds / 60))
     h, m = divmod(minutes, 60)
+    if h >= 24:
+        return msgs["dh"].format(d=h // 24, h=h % 24)
     return msgs["hm"].format(h=h, m=m) if h else msgs["m"].format(m=m)
 
 
@@ -339,10 +345,10 @@ class Telegram:
             if 400 <= e.code < 500:
                 log(f"telegram: HTTP {e.code} {detail.get('description', '')} — message dropped")
                 return "dropped", 0
-            log(f"telegram: HTTP {e.code} — will retry")
+            log(f"telegram: send failed, HTTP {e.code}")
             return "retry", 30
         except Exception as e:  # noqa: BLE001 — anything else (garbage replies too) is transient
-            log(f"telegram: {type(e).__name__} — will retry")
+            log(f"telegram: send failed, {type(e).__name__}")
             return "retry", 30
 
     def _run(self) -> None:
@@ -367,12 +373,15 @@ class Telegram:
                 time.sleep(30)
 
 
-def status_text(st: dict, lang: str, tz: tzinfo | None, now: float) -> str:
-    msgs = MESSAGES[lang]
-    if st["power"] not in ("on", "off"):
+def status_text(st: dict, lang: str, tz: tzinfo | None, now: float, stale_after: float = 60) -> str:
+    msgs, s = MESSAGES[lang], dict(st)  # one snapshot: the main thread keeps updating st
+    if s["power"] not in ("on", "off"):
         return msgs["status_unknown"]
-    return msgs[f"status_{st['power']}"].format(t=fmt_time(st["since"], tz, now),
-                                                 d=fmt_duration(now - st["since"], msgs))
+    text = msgs[f"status_{s['power']}"].format(t=fmt_time(s["since"], tz, now), d=fmt_duration(now - s["since"], msgs))
+    # Silent but not (yet) declared off: say so rather than state "on" with confidence.
+    if s["power"] == "on" and s.get("last_seen") and now - s["last_seen"] > stale_after:
+        text += " " + msgs["stale"].format(d=fmt_duration(now - s["last_seen"], msgs))
+    return text
 
 
 STATUS_WORDS = ("/status", "/start", "?", "status", "статус", "світло")
@@ -390,7 +399,7 @@ def reply_for(update: dict, allowed: frozenset[int], status: Callable[[], str], 
                 f"add the id to POWER_WATCH_ALLOWED_USERS to let them ask")
     text = (msg.get("text") or "").strip().lower()
     command = text.split()[0].split("@")[0] if text else ""
-    if command in STATUS_WORDS or text in STATUS_WORDS:
+    if command in STATUS_WORDS:
         return msg["chat"]["id"], status()
     return msg["chat"]["id"], MESSAGES[lang]["help"]
 
@@ -412,24 +421,52 @@ class Commands:
         with urllib.request.urlopen(self.tg.base + method, data=body, timeout=timeout) as r:
             return json.loads(r.read())
 
+    def answer(self, chat_id: int, text: str) -> None:
+        for attempt in range(3):  # a few quick tries; an answer minutes late is no use
+            status, wait = self.tg.send(text, chat_id)
+            if status != "retry":
+                return
+            time.sleep(min(wait, 10) if attempt < 2 else 0)
+        log(f"bot: could not answer chat {chat_id}")
+
+    def handle(self, updates: list, now: float) -> None:
+        """One reply per chat per batch, for messages under 10 min old: a backlog after an
+        outage or restart is answered once, with the current state."""
+        replies: dict[int, str] = {}
+        for update in updates:
+            msg = update.get("message")
+            if isinstance(msg, dict) and now - msg.get("date", now) > 600:
+                continue
+            try:
+                action = reply_for(update, self.allowed, self.status, self.lang)
+            except Exception as e:  # noqa: BLE001
+                log(f"bot: cannot build a reply: {type(e).__name__}")
+                continue
+            if isinstance(action, str):
+                user = (update.get("message") or {}).get("from", {}).get("id")
+                if user not in self.strangers:  # log each stranger once per run
+                    self.strangers.add(user)
+                    log(action)
+            elif action:
+                replies[action[0]] = action[1]
+        for chat_id, text in replies.items():
+            self.answer(chat_id, text)
+
     def _run(self) -> None:
-        try:  # the "/" menu in the chat; cosmetic, so one try
-            self.call("setMyCommands", {"commands": [{"command": "status",
-                                                      "description": MESSAGES[self.lang]["cmd_status"]}]}, 15)
-        except Exception as e:  # noqa: BLE001
-            log(f"bot: setMyCommands {type(e).__name__}")
-        offset = 0
+        self.strangers: set = set()
+        menu_set, offset = False, 0
         while True:
             try:
+                if not menu_set:  # the "/" menu; retried until the network is up
+                    self.call("setMyCommands", {"commands": [{"command": "status",
+                                                              "description": MESSAGES[self.lang]["cmd_status"]}]}, 15)
+                    menu_set = True
                 reply = self.call("getUpdates", {"offset": offset, "timeout": 50,
                                                  "allowed_updates": ["message"]}, 60)
-                for update in reply.get("result", []):
+                updates = reply.get("result", [])
+                for update in updates:
                     offset = max(offset, update.get("update_id", 0) + 1)
-                    action = reply_for(update, self.allowed, self.status, self.lang)
-                    if isinstance(action, str):
-                        log(action)
-                    elif action:
-                        self.tg.send(action[1], action[0])
+                self.handle(updates, time.time())
             except urllib.error.HTTPError as e:
                 # Never log e.url: it carries the token. 409 = another getUpdates consumer.
                 log(f"bot: getUpdates HTTP {e.code} {error_detail(e).get('description', '')}")
@@ -577,10 +614,10 @@ def watch(cfg: dict) -> int:
     if cfg["token"]:
         # Listen even with nobody allowed yet: an unknown user's message logs the id to allow.
         Commands(tg or Telegram(cfg["token"], ""), cfg["allowed"],
-                 lambda: status_text(st, cfg["lang"], cfg["tz"], time.time()), cfg["lang"]).start()
+                 lambda: status_text(st, cfg["lang"], cfg["tz"], time.time(), 3 * interval), cfg["lang"]).start()
     log(f"power-watch: device {cfg['device']}, gateway {cfg['gateway'] or '(default route)'}:{cfg['gw_port']}, "
-        f"every {interval:g}s, off after {off_after} misses, telegram {'on' if tg else 'off'}, "
-        f"{len(cfg['allowed'])} bot user(s), "
+        f"every {interval:g}s, off after {off_after} misses, channel {'on' if tg else 'off'}, "
+        f"bot {'on' if cfg['token'] else 'off'} ({len(cfg['allowed'])} user(s)), "
         f"starting from power={st['power']}" + (f", {len(outbox)} unsent post(s)" if outbox else ""))
     clock_offset = time.time() - time.monotonic()
     while True:
@@ -686,7 +723,10 @@ def find_chats(cfg: dict) -> int:
     if not cfg["token"]:
         log("power-watch: TELEGRAM_BOT_TOKEN unset")
         return 2
-    url = f"https://api.telegram.org/bot{cfg['token']}/getUpdates"
+    # allowed_updates is sticky on Telegram's side: the service asks for messages only, so ask
+    # for channel updates explicitly.
+    kinds = urllib.parse.quote(json.dumps(["message", "channel_post", "my_chat_member"]))
+    url = f"https://api.telegram.org/bot{cfg['token']}/getUpdates?allowed_updates={kinds}"
     try:
         with urllib.request.urlopen(url, timeout=15) as r:
             chats = chats_from_updates(json.loads(r.read()))
