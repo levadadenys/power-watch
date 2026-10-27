@@ -79,8 +79,10 @@ class Watch:
         outbox = store.load_state(self.persist_path, self.st) if self.persist_path else []
         if self.st["device_cfg"] != cfg.device:  # a different device configured: forget the old id
             self.st.update(device_id=0, device_cfg=cfg.device)
-        if cfg.device_id:  # set explicitly, e.g. after replacing the sensor
-            self.st["device_id"] = cfg.device_id
+        if cfg.device_id and cfg.device_id != self.st["device_id"]:
+            # Set explicitly, e.g. after replacing the sensor: a new device, a new power-on time,
+            # so start from "unknown" (a silent baseline) instead of reporting a power return.
+            self.st.update(device_id=cfg.device_id, power="unknown", last_on=0)
         # A new purifier always comes with a new token: key the remembered id on both (a hash only,
         # the token itself never leaves the settings file).
         purifier_key = f"{cfg.purifier_ip} {hashlib.sha256(cfg.purifier_token.encode()).hexdigest()[:12]}"
@@ -134,10 +136,12 @@ class Watch:
             return "other", None
         return "up", up
 
-    def search_due(self) -> bool:
+    def search_due(self, kind: str) -> bool:
         """Rate-limited, except right before a silence would be declared an outage: a sensor that
-        rejoined Wi-Fi at a new address since the last search must be found before that."""
-        if self.st["power"] != "off" and self.st["misses"] == self.cfg.off_after - 1:
+        rejoined Wi-Fi at a new address since the last search must be found before that. (Only for
+        silence: an unknown device's answers never count toward "out", and the miss count stands
+        still meanwhile, which would force a search on every probe.)"""
+        if kind == "silent" and self.st["power"] != "off" and self.st["misses"] == self.cfg.off_after - 1:
             return True  # (this probe makes the declaring miss if it is silent)
         every = SEARCH_EVERY_OFF_S if self.st["power"] == "off" else SEARCH_EVERY_S
         return time.monotonic() - self.last_search >= every
@@ -180,7 +184,7 @@ class Watch:
             gw_ok = kind == "other" or (bool(gateway) and probe.gateway_up(gateway, cfg.gw_port))
             # Not the sensor answering while the router does: before that counts toward "out",
             # check the sensor hasn't simply been given a new address.
-            if gw_ok and self.st["device_id"] and self.search_due():
+            if gw_ok and self.st["device_id"] and self.search_due(kind):
                 self.last_search = time.monotonic()
                 new_ip = self.search(self.st["device_id"], self.device_ip, "sensor")
                 if new_ip:
