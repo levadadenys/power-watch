@@ -53,10 +53,13 @@ jobs:
       - run: mypy
 
   install:
-    name: installer + single-file build
+    name: installer + packaging
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
       - run: shellcheck install.sh
       - name: build the executable and smoke-test it
         run: |
@@ -67,3 +70,7 @@ jobs:
           set +e
           POWER_WATCH_OFF_AFTER=x /tmp/power-watch; test $? -eq 2 || exit 1
           /tmp/power-watch --probe 127.0.0.1; test $? -eq 1 || exit 1
+      - name: reproducible build
+        run: ./install.sh --build /tmp/again && cmp /tmp/power-watch /tmp/again
+      - name: pip install
+        run: pip install . && power-watch --version
