@@ -73,12 +73,14 @@ class Lan(unittest.TestCase):
         "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
         "eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"  # default via 192.168.1.1
         "eth0\t0000A8C0\t00000000\t0001\t0\t0\t100\t00FEFFFF\t0\t0\t0\n"  # 192.168.0.0/23
+        "tun0\t0500000A\t00000000\t0005\t0\t0\t0\tFFFFFFFF\t0\t0\t0\n"  # host route 10.0.0.5/32
     )
 
     def test_the_search_covers_the_whole_lan_not_just_the_24(self):
         with mock.patch("builtins.open", mock.mock_open(read_data=self.ROUTES)):
             self.assertEqual(probe.lan_of("192.168.1.240"), "192.168.0.0/23")
-            self.assertEqual(probe.lan_of("10.0.0.5"), "10.0.0.5/24")  # not a local network: its /24
+            self.assertEqual(probe.lan_of("10.0.0.5"), "10.0.0.5/24")  # a /32 is no LAN: its /24
+            self.assertEqual(probe.lan_of("172.16.3.4"), "172.16.3.4/24")  # not a local network
 
 
 class Hello(unittest.TestCase):

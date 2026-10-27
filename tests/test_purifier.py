@@ -160,6 +160,11 @@ class Protocol(FakeCase):
         self.assertEqual((lines, dev.did), (["🌫 The purifier isn't answering."], 42))
         self.assertIn("a different device (id 12345678)", logged[0])
 
+    def test_an_impostor_with_another_token_never_becomes_the_purifier(self):
+        dev = self.fake(token="ff" * 16).client()  # the device at the address isn't ours (other token)
+        status_and_logs(dev)
+        self.assertEqual(dev.did, 0)  # its handshake id was not taken as the purifier's
+
     def test_unknown_model_says_so(self):
         dev = self.fake(model="zhimi.airp.new1").client()
         self.assertEqual(status_and_logs(dev)[0], ["🌫 Purifier model zhimi.airp.new1 isn't supported yet."])
