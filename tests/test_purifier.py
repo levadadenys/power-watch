@@ -258,6 +258,13 @@ class Lines(unittest.TestCase):
         lines = pu.status_lines({"on": False, "mode": 1, "fault": 2, "humidity": 45, "temperature": 22.4}, "en")
         self.assertEqual(lines, ["💧 45%   🌡 22.4 °C", "Purifier: off", "⚠️ Purifier: motor stuck"])
 
+    def test_a_worn_out_filter_says_to_replace_it(self):
+        self.assertEqual(pu.status_lines({"filter_pct": 0, "filter_days": 0}, "uk"), ["🧻 Фільтр: 0% — час замінити"])
+        self.assertEqual(
+            pu.status_lines({"filter_pct": 5, "filter_days": 9}, "en"), ["🧻 Filter: 5% — time to replace it"]
+        )
+        self.assertEqual(pu.status_lines({"filter_pct": 6, "filter_days": 11}, "en"), ["🧻 Filter: 6% (~11 days left)"])
+
     def test_quality_bands(self):
         self.assertEqual(
             [pu.pm25_quality(v, "en") for v in (9, 10, 35, 36, 55, 56)],

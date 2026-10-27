@@ -52,6 +52,7 @@ MESSAGES: dict[str, dict[str, Any]] = {
         "modes": {0: "auto", 1: "sleep", 2: "favorite"},
         "off": "Purifier: off",
         "filter": "🧻 Filter: {p}% (~{d} days left)",
+        "filter_replace": "🧻 Filter: {p}% — time to replace it",
         "faults": {2: "⚠️ Purifier: motor stuck", 3: "⚠️ Purifier: sensor lost"},
         "no_reply": "🌫 The purifier isn't answering.",
         "no_readings": "🌫 The purifier answered, but without readings.",
@@ -65,6 +66,7 @@ MESSAGES: dict[str, dict[str, Any]] = {
         "modes": {0: "авто", 1: "нічний", 2: "улюблений"},
         "off": "Очищувач: вимкнено",
         "filter": "🧻 Фільтр: {p}% (≈ {d} дн.)",
+        "filter_replace": "🧻 Фільтр: {p}% — час замінити",
         "faults": {2: "⚠️ Очищувач: заблоковано мотор", 3: "⚠️ Очищувач: втрачено датчик"},
         "no_reply": "🌫 Очищувач не відповідає.",
         "no_readings": "🌫 Очищувач відповів, але без показників.",
@@ -73,6 +75,8 @@ MESSAGES: dict[str, dict[str, Any]] = {
 }
 # PM2.5 µg/m³ upper bounds for the quality words (US EPA 24-h breakpoints, 2024).
 PM25_BANDS = (9, 35, 55)
+# Filter life (%) at or below which /status says to replace it.
+FILTER_REPLACE_PCT = 5
 
 
 class MiioError(Exception):
@@ -243,7 +247,11 @@ def status_lines(values: dict, lang: str) -> list[str]:
         mode = values["mode"]
         lines.append(msgs["mode"].format(m=msgs["modes"].get(mode, mode) if isinstance(mode, int) else mode))
     if "filter_pct" in values:
-        lines.append(msgs["filter"].format(p=values["filter_pct"], d=values.get("filter_days", "?")))
+        pct = values["filter_pct"]
+        # At the end of its life a days-left count ("≈ 0 days") says less than an instruction.
+        worn = isinstance(pct, int) and not isinstance(pct, bool) and pct <= FILTER_REPLACE_PCT
+        key = "filter_replace" if worn else "filter"
+        lines.append(msgs[key].format(p=pct, d=values.get("filter_days", "?")))
     fault = values.get("fault")
     if fault:
         lines.append(msgs["faults"].get(fault, f"⚠️ fault {fault}") if isinstance(fault, int) else f"⚠️ fault {fault}")
