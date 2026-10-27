@@ -256,6 +256,36 @@ class Bot(unittest.TestCase):
                          '⚡ Power is out since 11:23 (6 h 37 min).')
         self.assertTrue(pw.status_text({'power': 'unknown', 'since': since}, 'en', KYIV, self.now).startswith('❔'))
 
+    def test_status_flags_a_silent_sensor_and_long_spans_in_days(self):
+        since = self.now - 5 * 86_400 - 3 * 3_600  # across the 10-25 DST change: 16:00 local
+        st = {'power': 'on', 'since': since, 'last_seen': self.now - 120}
+        self.assertEqual(pw.status_text(st, 'en', KYIV, self.now),
+                         "💡 Power is on since 22.10 16:00 (5 d 3 h). The sensor hasn't answered for 2 min.")
+        st['last_seen'] = self.now - 10
+        self.assertNotIn('sensor', pw.status_text(st, 'en', KYIV, self.now))
+
+    def test_a_backlog_gets_one_fresh_reply_per_chat_and_strangers_are_logged_once(self):
+        sent, logged = [], []
+        c = pw.Commands(None, frozenset({7}), lambda: 'STATUS', 'en')
+        c.strangers = set()
+        c.answer = lambda chat, text: sent.append((chat, text))
+        orig, pw.log = pw.log, logged.append
+        try:
+            fresh = [dict(self.msg('/status'), update_id=i) for i in range(5)]
+            for u in fresh:
+                u['message']['date'] = self.now - 30
+            old = self.msg('/status', user=8)
+            old['message']['date'] = self.now - 3_600
+            c.allowed = frozenset({7, 8})
+            strangers = [self.msg('/status', user=99) for _ in range(3)]
+            for u in strangers:
+                u['message']['date'] = self.now
+            c.handle(fresh + [old] + strangers, self.now)
+        finally:
+            pw.log = orig
+        self.assertEqual(sent, [(7, 'STATUS')])
+        self.assertEqual(len(logged), 1)
+
     def test_allowed_users_get_the_status_others_are_logged(self):
         allowed, status = frozenset({7}), lambda: 'STATUS'
         for text in ('/status', '/status@pi_power_watch_chiki_bot', '/start', '?', 'Статус', 'світло'):
