@@ -4,8 +4,9 @@
 
 - The **Telegram bot token** and, optionally, the **purifier's device token**, in
   `/etc/power-watch.env` (mode 600, read by systemd as root).
-- The service runs as a throwaway system user (`DynamicUser=yes`) with no access to your home
-  directory, and only talks to your LAN and `api.telegram.org`.
+- The service runs as a throwaway system user (`DynamicUser=yes`): the system is read-only to it
+  (home directories included, as far as their permissions allow reading) except its own state
+  directories, and it only talks to your LAN and `api.telegram.org`.
 - Neither token is ever logged: requests to Telegram carry the token in the URL, so no URL or
   request is ever written to the journal (a test checks this).
 
