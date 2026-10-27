@@ -279,6 +279,12 @@ Raspberry Pi мають бути на ДБЖ. Встановлення: `sudo ./
 Боту можна написати `/status` (або «світло»): дозволеним користувачам він відповість, чи є світло,
 і покаже повітря з очищувача, якщо його налаштовано.
 
+## Contributing
+
+Bug reports, new device models and translations are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
+Changes are listed in [CHANGELOG.md](CHANGELOG.md); security reports go through
+[SECURITY.md](SECURITY.md).
+
 ## License
 
 [MIT](LICENSE)
