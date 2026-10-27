@@ -22,11 +22,13 @@ EnvironmentFile=/etc/power-watch.env
 ExecStart=/usr/bin/python3 /usr/local/bin/power-watch
 Restart=always
 RestartSec=30
-# Exit 2 = configuration error (no device set): stop instead of looping.
+# Exit 2 = configuration error (missing or bad setting, see the journal): stop instead of looping.
 RestartPreventExitStatus=2
 # /run/power-watch/state: the live state, rewritten every probe (tmpfs, no disk writes).
 RuntimeDirectory=power-watch
 RuntimeDirectoryMode=0755
+# Kept across restarts so readers never find it missing (the next probe refreshes it).
+RuntimeDirectoryPreserve=restart
 # /var/lib/power-watch/state.json: written on transitions only, so a restart neither repeats
 # nor loses an outage.
 StateDirectory=power-watch
