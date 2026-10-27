@@ -4,6 +4,7 @@ import socket
 import struct
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -14,20 +15,25 @@ except ImportError:  # the optional dependency is missing: nothing here can run
     pu = None
 
 TOKEN = "00112233445566778899aabbccddeeff"
-DID = 917817873
+DID = 12345678  # made up
 
 
 class FakePurifier:
     """A miIO device on localhost: answers hello, then decrypts requests with the device's own
     copy of the token and answers miIO.info / get_properties."""
 
-    def __init__(self, token=TOKEN, model="xiaomi.airp.cpa4", values=None):
+    def __init__(self, token=TOKEN, model="xiaomi.airp.cpa4", values=None, rows=None, raw_result=None,
+                 errors=(), spoof=False, chatty=False, garbled=False):
         self.dev = pu.Device("127.0.0.1", token)
         self.model = model
         self.values = values or {"on": True, "fault": 0, "mode": 0, "pm25": 7, "filter_pct": 63, "filter_days": 120}
+        self.rows, self.raw_result = rows, raw_result  # override the get_properties result
+        self.errors = list(errors)  # error objects to answer the next requests with
+        self.spoof, self.chatty, self.garbled = spoof, chatty, garbled
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("127.0.0.1", 0))
-        self.requests = []
+        self.other = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # "another LAN host"
+        self.requests, self.raw = [], []
         threading.Thread(target=self.serve, daemon=True).start()
 
     def serve(self):
@@ -41,12 +47,28 @@ class FakePurifier:
             except Exception:  # wrong token on the client side: a real device stays silent
                 continue
             self.requests.append(req)
-            if req["method"] == "miIO.info":
-                result = {"model": self.model}
+            self.raw.append(self.dev.decrypt(data[32:]))
+            if self.spoof:  # junk from another host, ahead of the real reply
+                self.other.sendto(b"\x21\x31" + b"\0" * 40, addr)
+            if self.garbled:  # the device itself: a packet that fails the checksum, then the reply
+                self.sock.sendto(b"\x21\x31" + b"\0" * 40, addr)
+            if self.chatty:  # valid packets for other request ids, forever
+                for i in range(200):
+                    wrong = json.dumps({"id": req["id"] + 1 + i, "result": []}).encode()
+                    self.sock.sendto(self.dev.packet(DID, 1_001, wrong), addr)
+                    time.sleep(0.01)
+                continue
+            if self.errors:
+                body = {"id": req["id"], "error": self.errors.pop(0)}
+            elif req["method"] == "miIO.info":
+                body = {"id": req["id"], "result": {"model": self.model}}
+            elif self.raw_result is not None:
+                body = self.raw_result if not isinstance(self.raw_result, dict) else {"id": req["id"], **self.raw_result}
             else:
-                result = [{"did": p["did"], "siid": p["siid"], "piid": p["piid"], "code": 0,
-                           "value": self.values[p["did"]]} for p in req["params"]]
-            payload = json.dumps({"id": req["id"], "result": result}).encode() + b"\0"
+                body = {"id": req["id"], "result": self.rows if self.rows is not None else [
+                    {"did": p["did"], "siid": p["siid"], "piid": p["piid"], "code": 0,
+                     "value": self.values[p["did"]]} for p in req["params"]]}
+            payload = json.dumps(body).encode() + b"\0"
             self.sock.sendto(self.dev.packet(DID, 1_001, payload), addr)
 
     def client(self, token=TOKEN):
@@ -83,6 +105,59 @@ class Protocol(unittest.TestCase):
     def test_unknown_model_says_so(self):
         dev = FakePurifier(model="zhimi.airp.new1").client()
         self.assertEqual(pu.status(dev, "en"), ["🌫 Purifier model zhimi.airp.new1 isn't supported yet."])
+
+    def test_requests_end_with_a_nul_like_python_miio(self):
+        fake = FakePurifier()
+        fake.client().read()
+        self.assertTrue(all(raw.endswith(b"\0") for raw in fake.raw))
+
+    def test_junk_from_another_host_is_dropped(self):
+        fake = FakePurifier(spoof=True)
+        self.assertEqual(fake.client().read(), fake.values)
+
+    def test_a_garbled_packet_from_the_device_is_skipped(self):
+        fake = FakePurifier(garbled=True)
+        self.assertEqual(fake.client().read(), fake.values)
+
+    def test_transient_device_error_is_retried(self):
+        fake = FakePurifier(errors=[{"code": -9999, "message": "user ack timeout"}])
+        self.assertEqual(fake.client().read(), fake.values)
+
+    def test_other_device_errors_are_not_retried(self):
+        fake = FakePurifier(errors=[{"code": -5001, "message": "invalid params"}])
+        with self.assertRaises(pu.MiioError):
+            fake.client().read()
+        self.assertEqual(len(fake.requests), 1)
+
+    def test_a_stream_of_unrelated_replies_cannot_hold_the_call_open(self):
+        dev = FakePurifier(chatty=True).client()
+        t0 = time.monotonic()
+        with self.assertRaises(pu.MiioError):
+            dev.read()
+        self.assertLess(time.monotonic() - t0, 2 * 0.5 + 0.5)  # attempts × timeout, plus slack
+
+    def test_odd_replies_become_lines_never_exceptions(self):
+        cases = {
+            "non-dict reply": dict(raw_result=["not", "a", "dict"]),
+            "non-list result": dict(raw_result={"result": 5}),
+            "pm25 null": dict(values={"on": True, "fault": 0, "mode": "x", "pm25": None,
+                                      "filter_pct": 1, "filter_days": 2}),
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(name):
+                lines = pu.status(FakePurifier(**kwargs).client(), "en")
+                self.assertTrue(lines and all(isinstance(line, str) for line in lines), lines)
+
+    def test_failed_properties_are_reported_not_hidden(self):
+        props = pu.MODELS["xiaomi.airp.cpa4"]
+        failed = [{"did": n, "siid": s, "piid": p, "code": -4001} for n, (s, p) in props.items()]
+        logged = []
+        self.assertEqual(pu.status(FakePurifier(rows=failed).client(), "en", logged.append),
+                         ["🌫 The purifier answered, but without readings."])
+        self.assertIn("-4001", logged[0])
+        partial = [{"did": "pm25", "siid": 3, "piid": 4, "code": 0},  # no value
+                   {"did": "filter_pct", "siid": 4, "piid": 1, "code": 0, "value": 40}]
+        self.assertEqual(FakePurifier(rows=partial).client().read(), {"filter_pct": 40})
 
     def test_packet_round_trip_and_tamper_check(self):
         dev = pu.Device("127.0.0.1", TOKEN)
