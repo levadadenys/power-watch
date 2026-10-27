@@ -32,11 +32,12 @@ def cmd_scan(cidr: str) -> int:
 
 
 def cmd_probe(ip: str) -> int:
-    up = probe.device_uptime(ip)
-    if up is None:
+    reply = probe.hello(ip)
+    if reply is None:
         print(f"{ip}: no answer")
         return 1
-    print(f"{ip}: up since {iso(time.time() - up)} ({up} s)")
+    device_id, up = reply
+    print(f"{ip}: device {device_id}, up since {iso(time.time() - up)} ({up} s)")
     return 0
 
 

@@ -77,6 +77,10 @@ What it handles, each with a test (the state machine in `power_watch/state.py` i
   so a restart neither repeats nor loses an outage.
 - **Clocks.** The Pi has no clock battery: power-watch waits for NTP after a boot and adjusts
   saved times if the clock jumps. The lamp's own slow clock drift is followed too.
+- **New addresses.** Every lamp has a permanent device id in its replies. If the router hands the
+  lamp (or the purifier) a new IP, power-watch finds it by that id before its silence can count
+  toward "out", and follows it. A different device at the lamp's old address is never mistaken
+  for the lamp.
 
 ## What you need
 
@@ -127,8 +131,7 @@ network before it trusts the lamp's silence. Then unplug the lamp for three minu
 one, the channel says the power is out, and when you plug it back in, that it's back.
 
 **4. Once, in the router:** reserve the lamp's address for its MAC (*DHCP reservation* or *static
-lease*). If the router ever gave the lamp a new address, its old one would go silent, and that
-looks exactly like an outage.
+lease*). power-watch follows a lamp that got a new address, but a fixed one saves it the search.
 
 ## Ask the bot
 
@@ -172,6 +175,7 @@ only on their own lines.
 | Variable | Default | |
 |---|---|---|
 | `POWER_WATCH_DEVICE_IP` | — | the sensor device, on mains power (required) |
+| `POWER_WATCH_DEVICE_ID` | learned | its miIO id; set it only after replacing the device |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | empty | without them, only the journal |
 | `POWER_WATCH_ALLOWED_USERS` | empty | Telegram user ids the bot answers `/status` for |
 | `POWER_WATCH_LANG` | `en` | `en` or `uk` |
@@ -188,11 +192,14 @@ A bad value stops the service with the reason in the journal, instead of restart
 ## FAQ
 
 **It posted "power is out", but the power is on.**
-Most likely the lamp got a new IP address. `power-watch --scan 192.168.0.0/24` shows where it is
-now: put that address in `POWER_WATCH_DEVICE_IP` (`sudoedit /etc/power-watch.env`), `sudo
-systemctl restart power-watch`, and reserve the same address in the router (step 4). Otherwise
-the lamp may be dropping off Wi-Fi for over a minute; the channel then gets a "false alarm"
-correction when it's back.
+The lamp probably dropped off Wi-Fi for over a minute; the channel gets a "false alarm" correction
+when it's back. (A lamp that got a new IP address is found and followed by its device id; the
+journal says "moved … → …". Reserve the address in the router, step 4.)
+
+**I replaced the lamp, and the journal says another device answers at its address.**
+power-watch knows the old lamp by its device id, so it ignores the new one rather than guess
+(it never declares an outage from it). Put the id the journal names into `POWER_WATCH_DEVICE_ID`
+(`sudoedit /etc/power-watch.env`) and `sudo systemctl restart power-watch`.
 
 **It never says the power is out.**
 power-watch only counts the lamp's silence while the router answers. Check the router answers its

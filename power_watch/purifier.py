@@ -113,6 +113,7 @@ class Device:
         self.iv = md5(self.key + self.token)
         self.msg_id = int.from_bytes(os.urandom(2), "big") % 9998
         self.model = ""
+        self.did = 0  # its permanent miIO id, from the last handshake (to find it if its IP changes)
 
     def encrypt(self, data: bytes) -> bytes:
         padder = padding.PKCS7(128).padder()
@@ -163,6 +164,8 @@ class Device:
                     if len(hello) >= 32 and hello[:2] == b"\x21\x31":
                         break
                 did, stamp = struct.unpack(">II", hello[8:16])
+                if self.did and did != self.did:  # DHCP gave its address to another device
+                    raise MiioError(f"a different device (id {did}) answers at {self.ip}")
                 self.msg_id = self.msg_id % 9998 + 1  # python-miio's range: 1..9998
                 body = json.dumps({"id": self.msg_id, "method": method, "params": params}).encode() + b"\0"
                 s.send(self.packet(did, stamp + 1, body))
@@ -174,6 +177,7 @@ class Device:
                         continue
                     if isinstance(reply, dict) and reply.get("id") == self.msg_id:
                         break
+                self.did = did  # only now: the reply proved it holds our token, so it is the purifier
             except socket.timeout:
                 raise Retry(last_error) from None
             except OSError as e:
