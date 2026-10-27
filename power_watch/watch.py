@@ -80,9 +80,13 @@ class Watch:
         if self.st["device_cfg"] != cfg.device:  # a different device configured: forget the old id
             self.st.update(device_id=0, device_cfg=cfg.device)
         if cfg.device_id and cfg.device_id != self.st["device_id"]:
-            # Set explicitly, e.g. after replacing the sensor: a new device, a new power-on time,
-            # so start from "unknown" (a silent baseline) instead of reporting a power return.
-            self.st.update(device_id=cfg.device_id, power="unknown", last_on=0)
+            if self.st["device_id"]:
+                # Replacing a known sensor: a new device has a new power-on time, so start from
+                # "unknown" (a silent baseline) instead of reporting a power return.
+                self.st.update(power="unknown", last_on=0)
+            # Nothing learned yet (e.g. set during an outage, before the sensor first answered):
+            # keep the state, so the return is still posted.
+            self.st["device_id"] = cfg.device_id
         # A new purifier always comes with a new token: key the remembered id on both (a hash only,
         # the token itself never leaves the settings file).
         purifier_key = f"{cfg.purifier_ip} {hashlib.sha256(cfg.purifier_token.encode()).hexdigest()[:12]}"
