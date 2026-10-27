@@ -197,6 +197,15 @@ class Loop(unittest.TestCase):
         self.drive(w2, lambda ip: (99, 120), lambda *a: None, 1)
         self.assertEqual((w2.st["last_on"], w2.tg.pending()), (T0 + 150 - 120, []))
 
+    def test_an_unknown_device_breaks_the_silence_streak(self):
+        w = watch.Watch(self.cfg)
+        self.run_probes(w, [3_600] * 10)
+        # Three silent probes (one short of "out"), then an unknown device answers at the address for a
+        # while, then nothing: a single silent probe must not finish the old count.
+        replies = iter([None] * 3 + [(99, 60)] * 4 + [None])
+        self.drive(w, lambda ip: next(replies), lambda *a: None, 8)
+        self.assertEqual((w.st["power"], w.st["misses"], w.tg.pending()), ("on", 1, []))
+
     def test_an_unknown_device_never_forces_a_search_on_every_probe(self):
         cfg = Config(**{**self.cfg.__dict__, "off_after": 1})  # misses == off_after - 1 == 0 always
         w = watch.Watch(cfg)
