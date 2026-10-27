@@ -286,6 +286,17 @@ class Bot(unittest.TestCase):
         self.assertEqual(sent, [(7, 'STATUS')])
         self.assertEqual(len(logged), 1)
 
+    def test_a_batch_builds_the_status_once(self):
+        calls, sent = [], []
+        c = pw.Commands(None, frozenset({7, 8}), lambda: calls.append(1) or 'STATUS', 'en')
+        c.strangers = set()
+        c.answer = lambda chat, text: sent.append((chat, text))
+        batch = [self.msg('/status', user=u) for u in (7, 8, 7, 8)]
+        for u in batch:
+            u['message']['date'] = self.now
+        c.handle(batch, self.now)
+        self.assertEqual((len(calls), sorted(sent)), (1, [(7, 'STATUS'), (8, 'STATUS')]))
+
     def test_allowed_users_get_the_status_others_are_logged(self):
         allowed, status = frozenset({7}), lambda: 'STATUS'
         for text in ('/status', '/status@pi_power_watch_chiki_bot', '/start', '?', 'Статус', 'світло'):
@@ -322,6 +333,46 @@ class Config(unittest.TestCase):
                     {'POWER_WATCH_PURIFIER_TOKEN': 'z' * 32}, {'POWER_WATCH_PURIFIER_IP': 'purifier'}):
             with self.subTest(env=env), self.assertRaises(pw.ConfigError):
                 pw.config(env)
+
+
+class PurifierLoading(unittest.TestCase):
+    cfg = {'purifier_ip': '192.168.0.155', 'purifier_token': 'ab' * 16}
+
+    def load_with(self, blocked):
+        """load_purifier() with the given modules made unimportable (None in sys.modules)."""
+        # Submodules too: once imported, `from cryptography.hazmat... import` finds them directly.
+        blocked = [k for k in list(sys.modules) if k.split('.')[0] in blocked] or blocked
+        blocked = sorted(set(blocked) | {b.split('.')[0] for b in blocked})
+        logged, saved = [], {k: sys.modules.pop(k, None) for k in ('purifier', *blocked)}
+        sys.modules.update(dict.fromkeys(blocked))
+        orig, pw.log = pw.log, logged.append
+        try:
+            return pw.load_purifier(self.cfg), logged
+        finally:
+            pw.log = orig
+            for k, v in saved.items():
+                sys.modules.pop(k, None)
+                if v is not None:
+                    sys.modules[k] = v
+
+    def test_missing_purifier_module_is_named(self):
+        loaded, logged = self.load_with(['purifier'])
+        self.assertIsNone(loaded)
+        self.assertIn('purifier.py is not next to', logged[0])
+
+    def test_missing_cryptography_is_named(self):
+        loaded, logged = self.load_with(['cryptography'])
+        self.assertIsNone(loaded)
+        self.assertIn('install python3-cryptography', logged[0])
+
+    def test_half_configured_purifier_is_logged(self):
+        logged = []
+        orig, pw.log = pw.log, logged.append
+        try:
+            self.assertIsNone(pw.load_purifier({'purifier_ip': '192.168.0.155', 'purifier_token': ''}))
+        finally:
+            pw.log = orig
+        self.assertIn('needs both', logged[0])
 
 
 class FakeHTTPError(pw.urllib.error.HTTPError):
