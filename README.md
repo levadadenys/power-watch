@@ -79,7 +79,8 @@ nc -vz 192.168.0.1 53     # "succeeded" or "refused" = good; set POWER_WATCH_GAT
 3. Channel settings → Administrators → add your bot, with permission to post messages.
 4. The chat id is `@channelname` for a public channel. For a private one, post anything in the
    channel after adding the bot, then run `power-watch --find-chats` with the token set (step 5
-   shows how to run it with the env file) and copy the `-100…` id.
+   shows how to run it with the env file; stop the service first if it's running) and copy the
+   `-100…` id.
 
 **4. Install**
 
@@ -104,6 +105,19 @@ cat /run/power-watch/state         # live state
 Then unplug the device: after about a minute the channel says the power is out, and when you
 plug it back in it says the power is back.
 
+## Ask the bot
+
+In a private chat with the bot, `/status` (or `?`) answers with the current state:
+
+```
+💡 Power is on since 11:23 (2 h 5 min).
+```
+
+It answers only the Telegram users in `POWER_WATCH_ALLOWED_USERS`. To add yourself, message the
+bot once, find your id in `journalctl -u power-watch` ("ignored a message from user 123…"), put it
+in the env file and restart the service. The service is the bot's only reader of its updates, so
+stop it before running `--find-chats`.
+
 ## Configuration
 
 `/etc/power-watch.env` (see [`power-watch.env.example`](power-watch.env.example)):
@@ -112,6 +126,7 @@ plug it back in it says the power is back.
 |---|---|---|
 | `POWER_WATCH_DEVICE_IP` | — | the miIO device on mains (required) |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | empty | without them, only the journal |
+| `POWER_WATCH_ALLOWED_USERS` | empty | Telegram user ids the bot answers `/status` for |
 | `POWER_WATCH_LANG` | `en` | `en` or `uk` |
 | `POWER_WATCH_TZ` | system local time | IANA zone for times in messages, e.g. `Europe/Kyiv` |
 | `POWER_WATCH_LABEL` | empty | prefix for every message, e.g. a place name |
