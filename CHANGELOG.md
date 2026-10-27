@@ -22,7 +22,7 @@ The first release: detecting outages, posting them, and installing with one comm
 - Channel posts in English or Ukrainian, queued until Telegram is reachable.
 - Private `/status` replies for allowed users, one per chat per batch.
 - Optional Xiaomi air purifier readings in `/status` (PM2.5, mode, filter life), over encrypted
-  miIO (#1).
+  miIO (#1); a worn-out filter (≤5%) says to replace it (#10).
 
 ### Install and operations
 - `install.sh`: a reproducible single-file build (stdlib zipapp), first-run setup, upgrades that
@@ -32,6 +32,7 @@ The first release: detecting outages, posting them, and installing with one comm
 
 ### Project
 - The `power_watch` package with a pure, fully tested state machine (#4); CI on Python 3.9–3.13
-  with ruff, mypy, shellcheck and a reproducible-build check (#2); README with diagrams and FAQ (#6).
+  with ruff, mypy, shellcheck and a reproducible-build check (#2); README with diagrams and FAQ (#6);
+  CONTRIBUTING, SECURITY, issue forms and a PR template (#9).
 
 [0.1.0]: https://github.com/levadadenys/power-watch/releases/tag/v0.1.0
