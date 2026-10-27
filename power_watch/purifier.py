@@ -113,6 +113,8 @@ class Device:
         self.iv = md5(self.key + self.token)
         self.msg_id = int.from_bytes(os.urandom(2), "big") % 9998
         self.model = ""
+        self.did = 0  # its permanent miIO id, from the last handshake (to find it if its IP changes)
+        self.failed = False  # the last read() got no answer
 
     def encrypt(self, data: bytes) -> bytes:
         padder = padding.PKCS7(128).padder()
@@ -163,6 +165,7 @@ class Device:
                     if len(hello) >= 32 and hello[:2] == b"\x21\x31":
                         break
                 did, stamp = struct.unpack(">II", hello[8:16])
+                self.did = did
                 self.msg_id = self.msg_id % 9998 + 1  # python-miio's range: 1..9998
                 body = json.dumps({"id": self.msg_id, "method": method, "params": params}).encode() + b"\0"
                 s.send(self.packet(did, stamp + 1, body))
@@ -249,6 +252,7 @@ def status_lines(values: dict, lang: str) -> list[str]:
 def status(dev: Device, lang: str) -> list[str]:
     """The purifier's /status lines. Never raises: the power status must not depend on it."""
     msgs = MESSAGES[lang]
+    dev.failed = False
     try:
         return status_lines(dev.read(), lang)
     except UnsupportedModel as e:
@@ -258,4 +262,5 @@ def status(dev: Device, lang: str) -> list[str]:
         return [msgs["no_readings"]]
     except Exception as e:  # noqa: BLE001 — a device quirk becomes a line, never a lost reply
         log.warning("purifier: %s: %s", type(e).__name__, e)  # messages here never include the token
+        dev.failed = True
         return [msgs["no_reply"]]
