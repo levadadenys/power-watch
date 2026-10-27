@@ -1,0 +1,15 @@
+name: Feature or device request
+description: A new device model, a language, or an idea
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like power-watch to do?
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Device model (for new devices)
+      description: The model id from the Mi Home app or `power-watch --purifier`, e.g. `xiaomi.airp.cpa4`.
