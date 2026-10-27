@@ -1,0 +1,37 @@
+# power-watch — mains power monitor; posts outages to Telegram. See README.md.
+#
+# Install (as root):
+#   install -m 755 power_watch.py /usr/local/bin/power-watch
+#   install -m 644 systemd/power-watch.service /etc/systemd/system/
+#   install -m 600 power-watch.env.example /etc/power-watch.env   # then edit it
+#   systemctl daemon-reload && systemctl enable --now power-watch.service
+[Unit]
+Description=power-watch (mains power monitor)
+Documentation=https://github.com/levadadenys/power-watch
+# time-sync: boards without an RTC boot with a stale clock. This ordering only holds where
+# systemd-time-wait-sync.service is enabled; the script also waits for timesyncd itself.
+After=network-online.target time-sync.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Needs nothing but UDP/TCP/HTTPS out and its own directories.
+DynamicUser=yes
+# Read by systemd as root, so it can (and should, it holds the bot token) be mode 600.
+EnvironmentFile=/etc/power-watch.env
+ExecStart=/usr/bin/python3 /usr/local/bin/power-watch
+Restart=always
+RestartSec=30
+# Exit 2 = configuration error (no device set): stop instead of looping.
+RestartPreventExitStatus=2
+# /run/power-watch/state: the live state, rewritten every probe (tmpfs, no disk writes).
+RuntimeDirectory=power-watch
+RuntimeDirectoryMode=0755
+# /var/lib/power-watch/state.json: written on transitions only, so a restart neither repeats
+# nor loses an outage.
+StateDirectory=power-watch
+CPUWeight=20
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
