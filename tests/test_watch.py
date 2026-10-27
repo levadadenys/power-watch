@@ -197,6 +197,14 @@ class Loop(unittest.TestCase):
         self.drive(w2, lambda ip: (99, 120), lambda *a: None, 1)
         self.assertEqual((w2.st["last_on"], w2.tg.pending()), (T0 + 150 - 120, []))
 
+    def test_setting_the_id_before_it_was_ever_learned_keeps_an_ongoing_outage(self):
+        path = os.path.join(self.dir, "state.json")
+        store.save_state(path, {**new_state(T0), "power": "off", "last_off": T0, "device_cfg": "192.0.2.10"}, [])
+        w = watch.Watch(Config(**{**self.cfg.__dict__, "device_id": 7}))
+        self.assertEqual((w.st["device_id"], w.st["power"]), (7, "off"))
+        self.drive(w, lambda ip: (7, 30), lambda *a: None, 1)  # power returns
+        self.assertTrue(w.tg.pending()[0].startswith("✅ Power is back"))
+
     def test_an_unknown_device_breaks_the_silence_streak(self):
         w = watch.Watch(self.cfg)
         self.run_probes(w, [3_600] * 10)
