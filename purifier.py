@@ -16,6 +16,7 @@ import socket
 import struct
 import time
 from collections.abc import Callable
+from typing import Any
 
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -33,7 +34,8 @@ MODELS = {
                          "filter_pct": (4, 1), "filter_days": (4, 4)},
 }
 
-MESSAGES = {
+# Per language: format strings, plus the quality words (tuple) and mode/fault names (dicts).
+MESSAGES: dict[str, dict[str, Any]] = {
     "en": {
         "pm25": "🌫 PM2.5: {v} µg/m³ ({q})",
         "quality": ("good", "moderate", "unhealthy for sensitive groups", "unhealthy"),
