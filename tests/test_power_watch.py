@@ -365,6 +365,27 @@ class PurifierLoading(unittest.TestCase):
         self.assertIsNone(loaded)
         self.assertIn('install python3-cryptography', logged[0])
 
+    def test_broken_cryptography_does_not_stop_the_watch(self):
+        # Installed but unloadable (e.g. a missing libssl symbol after an upgrade): a plain ImportError.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, 'cryptography'))
+            with open(os.path.join(d, 'cryptography', '__init__.py'), 'w') as f:
+                f.write("raise ImportError('undefined symbol: OPENSSL_x')\n")
+            saved = {k: sys.modules.pop(k) for k in list(sys.modules) if k.split('.')[0] in ('cryptography', 'purifier')}
+            sys.path.insert(0, d)
+            logged, orig = [], pw.log
+            pw.log = logged.append
+            try:
+                self.assertIsNone(pw.load_purifier(self.cfg))
+            finally:
+                pw.log = orig
+                sys.path.remove(d)
+                for k in [k for k in sys.modules if k.split('.')[0] in ('cryptography', 'purifier')]:
+                    del sys.modules[k]
+                sys.modules.update(saved)
+        self.assertIn('OPENSSL_x', logged[0])
+
     def test_half_configured_purifier_is_logged(self):
         logged = []
         orig, pw.log = pw.log, logged.append
