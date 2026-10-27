@@ -28,7 +28,10 @@ build() { # build FILE: zip the package with a __main__ that keeps the exit code
 	cp -R "$SRC/power_watch" "$stage/"
 	find "$stage" -name __pycache__ -prune -exec rm -rf {} +
 	printf 'import sys\nfrom power_watch.cli import main\nsys.exit(main())\n' >"$stage/__main__.py"
-	# Reproducible: zipapp already sorts the entries; fix the timestamps too (zip starts in 1980).
+	# Reproducible: zipapp already sorts the entries; fix the modes (not the umask's) and the
+	# timestamps (zip starts in 1980) too.
+	find "$stage" -type d -exec chmod 755 {} +
+	find "$stage" -type f -exec chmod 644 {} +
 	find "$stage" -exec touch -t 198001010000 {} +
 	python3 -m zipapp "$stage" -o "$out" -p "/usr/bin/env python3"
 	chmod 755 "$out"
@@ -109,7 +112,8 @@ say "Building and installing $BIN"
 tmp=$(mktemp)
 build "$tmp"
 # Only when the old files are really there: a checkout or other data under /opt is never touched.
-if [ -L "$BIN" ] || [ -e "$LEGACY_DIR/power_watch.py" ] || [ -e "$LEGACY_DIR/purifier.py" ]; then
+if [ ! -e "$LEGACY_DIR/.git" ] &&
+	{ [ -L "$BIN" ] || [ -e "$LEGACY_DIR/power_watch.py" ] || [ -e "$LEGACY_DIR/purifier.py" ]; }; then
 	say "Replacing the old layout ($LEGACY_DIR + symlink)"
 	rm -f "$BIN"
 	# Only our own files: anything else someone put there stays (and so does the directory).
