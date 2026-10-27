@@ -152,8 +152,10 @@ Adding another MiOT purifier means a `MODELS` entry with its own siid/piid numbe
 against its spec on miot-spec. Its mode and fault values may differ from the 4 Compact's too.
 Humidity and temperature are shown when the map includes them. PRs welcome.
 
-If the purifier stops answering `/status`, the reason is in `journalctl -u power-watch`, for
-example a wrong token or no readings.
+`/status` waits at most about 5 seconds for the purifier. If it doesn't answer in time, the reply
+says so, and the reason is in `journalctl -u power-watch` (for example a wrong token or no
+readings). A broken or missing `python3-cryptography` turns the readings off; it never stops the
+power watch.
 
 ## Configuration
 
