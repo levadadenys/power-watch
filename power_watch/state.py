@@ -12,6 +12,7 @@ The watch keeps a small state dict:
     gw_down        consecutive failed router probes
     prev_since, prev_last_off   the values before the last "off", to undo a false one
     device_id, device_cfg       which device the sensor is, to follow it when its IP changes
+    purifier_id, purifier_cfg   the same for the purifier
 """
 
 from __future__ import annotations
@@ -46,6 +47,8 @@ def new_state(now: int) -> dict:
         "started": now,
         "device_id": 0,  # the sensor's permanent miIO id, learned from its first answer
         "device_cfg": "",  # the configured IP the id was learned for (a new device resets it)
+        "purifier_id": 0,  # the same for the purifier
+        "purifier_cfg": "",
     }
 
 

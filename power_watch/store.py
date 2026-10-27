@@ -23,8 +23,10 @@ PERSIST_KEYS = (
     "prev_last_off",
     "device_id",
     "device_cfg",
+    "purifier_id",
+    "purifier_cfg",
 )
-STR_KEYS = ("device_cfg",)
+STR_KEYS = ("device_cfg", "purifier_cfg")
 
 
 def load_state(path: str, st: dict) -> list[str]:
