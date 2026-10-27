@@ -241,17 +241,52 @@ class Plumbing(unittest.TestCase):
         self.assertEqual(pw.chats_from_updates(updates), {-1001234: 'channel Світло', 42: 'private someone'})
 
 
+class Bot(unittest.TestCase):
+    now = datetime(2026, 10, 27, 18, 0, tzinfo=KYIV).timestamp()
+
+    def msg(self, text, user=7, chat_type='private', username='me'):
+        return {'update_id': 1, 'message': {'chat': {'id': user, 'type': chat_type},
+                                            'from': {'id': user, 'username': username}, 'text': text}}
+
+    def test_status_text(self):
+        since = datetime(2026, 10, 27, 11, 23, tzinfo=KYIV).timestamp()
+        self.assertEqual(pw.status_text({'power': 'on', 'since': since}, 'uk', KYIV, self.now),
+                         '💡 Світло є з 11:23 (6 год 37 хв).')
+        self.assertEqual(pw.status_text({'power': 'off', 'since': since}, 'en', KYIV, self.now),
+                         '⚡ Power is out since 11:23 (6 h 37 min).')
+        self.assertTrue(pw.status_text({'power': 'unknown', 'since': since}, 'en', KYIV, self.now).startswith('❔'))
+
+    def test_allowed_users_get_the_status_others_are_logged(self):
+        allowed, status = frozenset({7}), lambda: 'STATUS'
+        for text in ('/status', '/status@pi_power_watch_chiki_bot', '/start', '?', 'Статус', 'світло'):
+            self.assertEqual(pw.reply_for(self.msg(text), allowed, status, 'en'), (7, 'STATUS'), text)
+        self.assertEqual(pw.reply_for(self.msg('hello'), allowed, status, 'en'), (7, pw.MESSAGES['en']['help']))
+        self.assertEqual(pw.reply_for(self.msg('', ), allowed, status, 'en'), (7, pw.MESSAGES['en']['help']))
+        stranger = pw.reply_for(self.msg('/status', user=99, username='x'), allowed, status, 'en')
+        self.assertIsInstance(stranger, str)
+        self.assertIn('99', stranger)
+        self.assertNotIn('STATUS', stranger)
+
+    def test_groups_channels_and_other_updates_are_ignored(self):
+        allowed, status = frozenset({7}), lambda: 'STATUS'
+        self.assertIsNone(pw.reply_for(self.msg('/status', chat_type='group'), allowed, status, 'en'))
+        self.assertIsNone(pw.reply_for({'update_id': 2, 'channel_post': {'chat': {'id': -100}}}, allowed, status, 'en'))
+        self.assertIsNone(pw.reply_for({'update_id': 3, 'message': 'garbage'}, allowed, status, 'en'))
+
+
 class Config(unittest.TestCase):
     def test_defaults(self):
         cfg = pw.config({'POWER_WATCH_DEVICE_IP': '192.168.0.150'})
-        self.assertEqual((cfg['device'], cfg['lang'], cfg['interval'], cfg['off_after'], cfg['gw_port']),
-                         ('192.168.0.150', 'en', 15.0, 4, 53))
+        self.assertEqual((cfg['device'], cfg['lang'], cfg['interval'], cfg['off_after'], cfg['gw_port'], cfg['allowed']),
+                         ('192.168.0.150', 'en', 15.0, 4, 53, frozenset()))
+        self.assertEqual(pw.config({'POWER_WATCH_ALLOWED_USERS': '7, 42 8'})['allowed'], frozenset({7, 42, 8}))
 
     def test_bad_values_are_config_errors(self):
         for env in ({'POWER_WATCH_OFF_AFTER': '4   # misses'}, {'POWER_WATCH_OFF_AFTER': '0'},
                     {'POWER_WATCH_INTERVAL_S': '0'}, {'POWER_WATCH_TZ': 'Europe/Kyiv  # x'},
                     {'POWER_WATCH_TZ': '../etc'}, {'POWER_WATCH_LANG': 'de'},
-                    {'POWER_WATCH_DEVICE_IP': '192.168.0.150 # lamp'}, {'POWER_WATCH_GATEWAY': 'router'}):
+                    {'POWER_WATCH_DEVICE_IP': '192.168.0.150 # lamp'}, {'POWER_WATCH_GATEWAY': 'router'},
+                    {'POWER_WATCH_ALLOWED_USERS': '@me'}):
             with self.subTest(env=env), self.assertRaises(pw.ConfigError):
                 pw.config(env)
 
