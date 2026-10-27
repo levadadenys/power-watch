@@ -50,7 +50,16 @@ class Loop(unittest.TestCase):
         d = tempfile.TemporaryDirectory()
         self.addCleanup(d.cleanup)
         self.dir = d.name
-        self.cfg = Config(device="192.0.2.10", token="T", chat="@c", lang="en", tz=KYIV, gateway="192.0.2.1")
+        self.cfg = Config(
+            device="192.0.2.10",
+            token="T",
+            chat="@c",
+            lang="en",
+            tz=KYIV,
+            gateway="192.0.2.1",
+            run_dir=self.dir,
+            state_dir=self.dir,
+        )
 
     def run_probes(self, w, answers, start=T0):
         """answers: device uptime per probe (None = silent); the router always answers."""
@@ -63,7 +72,7 @@ class Loop(unittest.TestCase):
         return now
 
     def test_an_outage_is_posted_persisted_and_survives_a_restart(self):
-        w = watch.Watch(self.cfg, self.dir, self.dir)
+        w = watch.Watch(self.cfg)
         boot = T0 - 3_600
         now = self.run_probes(w, [T0 - boot + 15 * i for i in range(10)] + [None] * 10)
         self.assertEqual(w.st["power"], "off")
@@ -71,7 +80,7 @@ class Loop(unittest.TestCase):
         self.assertTrue(w.tg.pending()[0].startswith("⚡ Power is out since"))
 
         # Restart mid-outage: nothing re-posted, the unsent post is still there; then power returns.
-        w2 = watch.Watch(self.cfg, self.dir, self.dir)
+        w2 = watch.Watch(self.cfg)
         self.assertEqual((w2.st["power"], len(w2.tg.pending())), ("off", 1))
         self.run_probes(w2, [None] * 5 + [30], start=now)
         posts = w2.tg.pending()
@@ -84,11 +93,45 @@ class Loop(unittest.TestCase):
         self.assertEqual(len(store.load_state(os.path.join(self.dir, "state.json"), restored)), 2)
         self.assertEqual(restored["power"], "on")
 
-    def test_status_adds_purifier_lines_and_never_fails_because_of_them(self):
+    def test_run_reports_unsent_posts_and_shifts_times_on_a_clock_step(self):
+        store.save_state(os.path.join(self.dir, "state.json"), {**new_state(T0), "power": "off"}, ["⚡ queued"])
         w = watch.Watch(self.cfg)
+        started = w.st["started"]
+
+        class Stop(Exception):
+            pass
+
+        # NTP steps the wall clock an hour forward during the first sleep; the monotonic one doesn't
+        # move. The second sleep ends the loop. (logging reads time.time() too, so it is a function.)
+        clock = {"wall": float(T0), "sleeps": 0}
+
+        def sleep(_s):
+            clock["sleeps"] += 1
+            if clock["sleeps"] == 2:
+                raise Stop
+            clock["wall"] += 3_600
+
+        with (
+            mock.patch("time.time", side_effect=lambda: clock["wall"]),
+            mock.patch("time.monotonic", return_value=100.0),
+            mock.patch("time.sleep", side_effect=sleep),
+            mock.patch.object(watch.Telegram, "start"),
+            mock.patch.object(watch.Commands, "start"),
+            mock.patch("power_watch.probe.device_uptime", return_value=None),
+            mock.patch("power_watch.probe.gateway_up", return_value=True),
+            self.assertLogs("power_watch.watch") as logs,
+            self.assertRaises(Stop),
+        ):
+            w.run()
+        self.assertIn("1 unsent post(s)", logs.output[0])
+        self.assertIn("wall clock stepped +3600 s", logs.output[1])
+        self.assertEqual(w.st["started"], started + 3_600)
+
+    def test_status_adds_purifier_lines_and_never_fails_because_of_them(self):
+        w = watch.Watch(Config(device="192.0.2.10"))
         broken = mock.Mock()
         broken.status.return_value = ["🌫 The purifier isn't answering."]
-        w.purifier = (broken, object())
+        w.purifier = watch.LoadedPurifier(broken, object())
         self.assertEqual(w.status().splitlines()[1], "🌫 The purifier isn't answering.")
 
 
