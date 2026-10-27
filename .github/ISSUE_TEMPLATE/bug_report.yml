@@ -1,0 +1,27 @@
+name: Bug report
+description: Something behaves differently from what the README says
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: For example "the channel said the power is out, but it was on".
+    validations:
+      required: true
+  - type: textarea
+    id: journal
+    attributes:
+      label: Journal lines
+      description: "`journalctl -u power-watch --since \"1 hour ago\"`. Remove tokens and anything that identifies your home."
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`power-watch --version`"
+  - type: input
+    id: setup
+    attributes:
+      label: Setup
+      description: The box (e.g. Raspberry Pi 4, Raspberry Pi OS Bookworm), the sensor device model, the purifier model if any.
