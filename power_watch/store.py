@@ -23,6 +23,7 @@ PERSIST_KEYS = (
     "prev_last_off",
     "device_id",
     "device_cfg",
+    "prev_device_id",
     "purifier_id",
     "purifier_cfg",
 )
