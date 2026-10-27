@@ -18,6 +18,8 @@ Stdlib only, Python 3.9+. Config (environment; see power-watch.env.example):
   TELEGRAM_BOT_TOKEN        bot that posts to the channel (optional: without it,
   TELEGRAM_CHAT_ID          the journal is the only output); chat id or @channel
   POWER_WATCH_LANG          message language: en (default) or uk
+  POWER_WATCH_ALLOWED_USERS Telegram user ids (comma-separated) the bot answers /status for in a
+                            private chat; others get no reply (their id is logged to add them)
   POWER_WATCH_TZ            IANA zone for times in messages, default: system local
   POWER_WATCH_LABEL         optional prefix for every message, e.g. a place name
   POWER_WATCH_GATEWAY       router IP, default: the default route's gateway
@@ -71,6 +73,11 @@ MESSAGES = {
         "unobserved": "✅ Power came back at {t} after a short or unobserved outage.",
         "false_alarm": "↩️ False alarm: power never went out (the sensor only dropped off Wi-Fi).",
         "test": "🔔 power-watch test message.",
+        "status_on": "💡 Power is on since {t} ({d}).",
+        "status_off": "⚡ Power is out since {t} ({d}).",
+        "status_unknown": "❔ Not known yet: the sensor hasn't answered since the watch started.",
+        "help": "Send /status to see whether the power is on.",
+        "cmd_status": "Is the power on?",
         "hm": "{h} h {m} min",
         "m": "{m} min",
     },
@@ -82,6 +89,11 @@ MESSAGES = {
         "unobserved": "✅ Світло повернулося о {t} після короткого або непоміченого відключення.",
         "false_alarm": "↩️ Хибна тривога: світло не зникало (датчик лише втратив Wi-Fi).",
         "test": "🔔 Тестове повідомлення power-watch.",
+        "status_on": "💡 Світло є з {t} ({d}).",
+        "status_off": "⚡ Світла немає з {t} ({d}).",
+        "status_unknown": "❔ Поки невідомо: датчик ще не відповідав.",
+        "help": "Надішліть /status, щоб дізнатися, чи є світло.",
+        "cmd_status": "Чи є світло?",
         "hm": "{h} год {m} хв",
         "m": "{m} хв",
     },
@@ -287,7 +299,8 @@ class Telegram:
 
     def __init__(self, token: str, chat_id: str, outbox: list[str] | None = None,
                  on_sent: Callable[[], None] | None = None):
-        self.url = f"https://api.telegram.org/bot{token}/sendMessage"
+        self.base = f"https://api.telegram.org/bot{token}/"
+        self.url = self.base + "sendMessage"
         self.chat_id = chat_id
         self.outbox = list(outbox or [])
         self.cv = threading.Condition()
@@ -306,10 +319,11 @@ class Telegram:
         with self.cv:
             return list(self.outbox)
 
-    def send(self, text: str) -> tuple[str, float]:
+    def send(self, text: str, chat_id: str | int | None = None) -> tuple[str, float]:
         """One attempt: ("sent" | "dropped" | "retry", seconds to wait before retrying). A permanent
-        rejection (bad token or chat) is logged and dropped rather than retried forever."""
-        body = urllib.parse.urlencode({"chat_id": self.chat_id, "text": text}).encode()
+        rejection (bad token or chat) is logged and dropped rather than retried forever. chat_id
+        defaults to the channel."""
+        body = urllib.parse.urlencode({"chat_id": chat_id or self.chat_id, "text": text}).encode()
         try:
             with urllib.request.urlopen(self.url, data=body, timeout=15) as r:
                 r.read()
@@ -351,6 +365,78 @@ class Telegram:
             except Exception as e:  # noqa: BLE001 — the worker must outlive any surprise
                 log(f"telegram: worker {type(e).__name__} — retrying in 30 s")
                 time.sleep(30)
+
+
+def status_text(st: dict, lang: str, tz: tzinfo | None, now: float) -> str:
+    msgs = MESSAGES[lang]
+    if st["power"] not in ("on", "off"):
+        return msgs["status_unknown"]
+    return msgs[f"status_{st['power']}"].format(t=fmt_time(st["since"], tz, now),
+                                                 d=fmt_duration(now - st["since"], msgs))
+
+
+STATUS_WORDS = ("/status", "/start", "?", "status", "статус", "світло")
+
+
+def reply_for(update: dict, allowed: frozenset[int], status: Callable[[], str], lang: str) -> tuple[int, str] | str | None:
+    """What to do with one getUpdates entry: (chat id, reply) for an allowed user's private
+    message, a log line for anyone else's, None for the rest (channel posts, edits, ...)."""
+    msg = update.get("message")
+    if not isinstance(msg, dict) or (msg.get("chat") or {}).get("type") != "private":
+        return None
+    user = msg.get("from") or {}
+    if user.get("id") not in allowed:
+        return (f"bot: ignored a message from user {user.get('id')} (@{user.get('username', '?')}) — "
+                f"add the id to POWER_WATCH_ALLOWED_USERS to let them ask")
+    text = (msg.get("text") or "").strip().lower()
+    command = text.split()[0].split("@")[0] if text else ""
+    if command in STATUS_WORDS or text in STATUS_WORDS:
+        return msg["chat"]["id"], status()
+    return msg["chat"]["id"], MESSAGES[lang]["help"]
+
+
+class Commands:
+    """Answers private /status messages: long-polls getUpdates (the one consumer of the bot's
+    updates — a second one, even --find-chats, gets HTTP 409 while this runs)."""
+
+    def __init__(self, tg: Telegram, allowed: frozenset[int], status: Callable[[], str], lang: str):
+        self.tg, self.allowed, self.status, self.lang = tg, allowed, status, lang
+
+    def start(self) -> Commands:
+        threading.Thread(target=self._run, daemon=True).start()
+        return self
+
+    def call(self, method: str, params: dict, timeout: float) -> dict:
+        body = urllib.parse.urlencode({k: json.dumps(v) if isinstance(v, (list, dict)) else v
+                                       for k, v in params.items()}).encode()
+        with urllib.request.urlopen(self.tg.base + method, data=body, timeout=timeout) as r:
+            return json.loads(r.read())
+
+    def _run(self) -> None:
+        try:  # the "/" menu in the chat; cosmetic, so one try
+            self.call("setMyCommands", {"commands": [{"command": "status",
+                                                      "description": MESSAGES[self.lang]["cmd_status"]}]}, 15)
+        except Exception as e:  # noqa: BLE001
+            log(f"bot: setMyCommands {type(e).__name__}")
+        offset = 0
+        while True:
+            try:
+                reply = self.call("getUpdates", {"offset": offset, "timeout": 50,
+                                                 "allowed_updates": ["message"]}, 60)
+                for update in reply.get("result", []):
+                    offset = max(offset, update.get("update_id", 0) + 1)
+                    action = reply_for(update, self.allowed, self.status, self.lang)
+                    if isinstance(action, str):
+                        log(action)
+                    elif action:
+                        self.tg.send(action[1], action[0])
+            except urllib.error.HTTPError as e:
+                # Never log e.url: it carries the token. 409 = another getUpdates consumer.
+                log(f"bot: getUpdates HTTP {e.code} {error_detail(e).get('description', '')}")
+                time.sleep(30)
+            except Exception as e:  # noqa: BLE001 — network down etc.; keep listening
+                log(f"bot: getUpdates {type(e).__name__}")
+                time.sleep(15)
 
 
 def error_detail(e: urllib.error.HTTPError) -> dict:
@@ -412,6 +498,10 @@ def config(env: dict | None = None) -> dict:
         except ValueError:
             raise ConfigError(f"{name}={v!r} is not an IPv4 address") from None
 
+    try:
+        allowed = frozenset(int(u) for u in get("POWER_WATCH_ALLOWED_USERS").replace(",", " ").split())
+    except ValueError:
+        raise ConfigError("POWER_WATCH_ALLOWED_USERS must be numeric Telegram user ids, comma-separated") from None
     lang = get("POWER_WATCH_LANG", "en")
     if lang not in MESSAGES:
         raise ConfigError(f"POWER_WATCH_LANG={lang!r}: one of {', '.join(MESSAGES)}")
@@ -429,6 +519,7 @@ def config(env: dict | None = None) -> dict:
         "lang": lang,
         "tz": tz,
         "label": get("POWER_WATCH_LABEL"),
+        "allowed": allowed,
         "gateway": ip("POWER_WATCH_GATEWAY"),
         "gw_port": num("POWER_WATCH_GATEWAY_PORT", "53", int, 1),
         "interval": num("POWER_WATCH_INTERVAL_S", "15", float, 1),
@@ -483,8 +574,13 @@ def watch(cfg: dict) -> int:
 
     if cfg["token"] and cfg["chat"]:
         tg = Telegram(cfg["token"], cfg["chat"], outbox, on_sent=persist).start()
+    if cfg["token"]:
+        # Listen even with nobody allowed yet: an unknown user's message logs the id to allow.
+        Commands(tg or Telegram(cfg["token"], ""), cfg["allowed"],
+                 lambda: status_text(st, cfg["lang"], cfg["tz"], time.time()), cfg["lang"]).start()
     log(f"power-watch: device {cfg['device']}, gateway {cfg['gateway'] or '(default route)'}:{cfg['gw_port']}, "
         f"every {interval:g}s, off after {off_after} misses, telegram {'on' if tg else 'off'}, "
+        f"{len(cfg['allowed'])} bot user(s), "
         f"starting from power={st['power']}" + (f", {len(outbox)} unsent post(s)" if outbox else ""))
     clock_offset = time.time() - time.monotonic()
     while True:
