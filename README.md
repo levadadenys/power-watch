@@ -77,9 +77,9 @@ nc -vz 192.168.0.1 53     # "succeeded" or "refused" = good; set POWER_WATCH_GAT
 1. In Telegram, message [@BotFather](https://t.me/BotFather) → `/newbot` and copy the token.
 2. Create a channel. Make it public with an @name, or private and share an invite link.
 3. Channel settings → Administrators → add your bot, with permission to post messages.
-4. The chat id is `@channelname` for a public channel. For a private one, use its numeric `-100…` id.
-   Forward a channel post to [@userinfobot](https://t.me/userinfobot), or briefly make the channel
-   public to test.
+4. The chat id is `@channelname` for a public channel. For a private one, post anything in the
+   channel after adding the bot, then run `power-watch --find-chats` with the token set (step 5
+   shows how to run it with the env file) and copy the `-100…` id.
 
 **4. Install**
 
