@@ -18,6 +18,9 @@ from power_watch.telegram import Telegram
 
 log = logging.getLogger(__name__)
 
+# How often to look for a silent device somewhere else on the network (a scan takes ~2 s).
+SEARCH_EVERY_S = 300
+
 
 class LoadedPurifier(NamedTuple):
     module: ModuleType  # power_watch.purifier, imported only when configured
@@ -69,6 +72,11 @@ class Watch:
         self.persist_path = os.path.join(cfg.state_dir, "state.json") if cfg.state_dir else ""
         self.st = new_state(int(time.time()))
         outbox = store.load_state(self.persist_path, self.st) if self.persist_path else []
+        if self.st["device_cfg"] != cfg.device:  # a different device configured: forget the old id
+            self.st.update(device_id=0, device_cfg=cfg.device)
+        self.device_ip = cfg.device  # where the sensor answers now; follows it when DHCP moves it
+        self.next_search = 0.0  # monotonic time of the next allowed network search
+        self.next_purifier_search = 0.0
         self.lock = threading.Lock()
         self.tg = Telegram(cfg.token, cfg.chat, outbox, on_sent=self.persist) if cfg.token and cfg.chat else None
         self.purifier = load_purifier(cfg)
@@ -94,14 +102,57 @@ class Watch:
             return text
         return "\n".join([text, *self.purifier.module.status(self.purifier.device, self.cfg.lang)])
 
+    def sensor_uptime(self) -> int | None:
+        """The sensor's uptime, or None when it is silent. An answer from a different device at the
+        sensor's address (DHCP gave the address to someone else) is silence too."""
+        reply = probe.hello(self.device_ip)
+        if not reply:
+            return None
+        device_id, up = reply
+        if not self.st["device_id"]:
+            self.st["device_id"] = device_id  # first answer: remember who the sensor is
+            self.persist()
+        elif device_id != self.st["device_id"]:
+            log.warning(
+                "power-watch: %s now answers as device %s, not the sensor %s",
+                self.device_ip,
+                device_id,
+                self.st["device_id"],
+            )
+            return None
+        return up
+
+    def search(self, device_id: int, current_ip: str, what: str) -> str | None:
+        """The device's new IP if it has moved, else None. Callers rate-limit it."""
+        new_ip = probe.find(device_id, current_ip)
+        if new_ip and new_ip != current_ip:
+            log.warning(
+                "power-watch: the %s moved %s → %s; following it (a DHCP reservation in the "
+                "router keeps its address fixed)",
+                what,
+                current_ip,
+                new_ip,
+            )
+            return new_ip
+        return None
+
     def probe_once(self, now: float) -> None:
         cfg = self.cfg
-        up = probe.device_uptime(cfg.device)
+        up = self.sensor_uptime()
         gw_ok = True
         if up is None:
             # Re-resolved every probe: at boot the default route may not exist yet.
             gateway = cfg.gateway or probe.default_gateway()
             gw_ok = bool(gateway) and probe.gateway_up(gateway, cfg.gw_port)
+            # Silent while the router answers: before that counts toward "out", check the sensor
+            # hasn't simply been given a new address.
+            if gw_ok and self.st["device_id"] and time.monotonic() >= self.next_search:
+                self.next_search = time.monotonic() + SEARCH_EVERY_S
+                new_ip = self.search(self.st["device_id"], self.device_ip, "sensor")
+                if new_ip:
+                    self.device_ip = new_ip
+                    up = self.sensor_uptime()
+        self.follow_purifier()
         events = step(self.st, up, gw_ok, now, cfg.interval, cfg.off_after)
         for kind, ev in events:
             log.info(describe(kind, ev))
@@ -116,6 +167,18 @@ class Watch:
                 store.write_live(self.live_path, self.st)
             except OSError as e:
                 log.error("power-watch: cannot write %s: %s", self.live_path, e)
+
+    def follow_purifier(self) -> None:
+        """After a failed purifier reading, look for it elsewhere (from the probe loop, so /status
+        never waits for a scan)."""
+        if not self.purifier or time.monotonic() < self.next_purifier_search:
+            return
+        dev = self.purifier.device
+        if dev.failed and dev.did:
+            self.next_purifier_search = time.monotonic() + SEARCH_EVERY_S
+            new_ip = self.search(dev.did, dev.ip, "purifier")
+            if new_ip:
+                dev.ip = new_ip
 
     def run(self) -> None:
         cfg = self.cfg
