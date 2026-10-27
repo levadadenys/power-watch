@@ -1,11 +1,6 @@
 # power-watch — mains power monitor; posts outages to Telegram. See README.md.
 #
-# Install (as root):
-#   install -d /opt/power-watch && install -m 644 purifier.py /opt/power-watch/
-#   install -m 755 power_watch.py /opt/power-watch/ && ln -sf /opt/power-watch/power_watch.py /usr/local/bin/power-watch
-#   install -m 644 systemd/power-watch.service /etc/systemd/system/
-#   install -m 600 power-watch.env.example /etc/power-watch.env   # then edit it
-#   systemctl daemon-reload && systemctl enable --now power-watch.service
+# Install, upgrade or remove with install.sh (sudo ./install.sh [--uninstall]).
 [Unit]
 Description=power-watch (mains power monitor)
 Documentation=https://github.com/levadadenys/power-watch
