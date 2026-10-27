@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from typing import ClassVar
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -337,7 +338,7 @@ class Config(unittest.TestCase):
 
 
 class PurifierLoading(unittest.TestCase):
-    cfg = {'purifier_ip': '192.168.0.155', 'purifier_token': 'ab' * 16}
+    cfg: ClassVar[dict] = {'purifier_ip': '192.168.0.155', 'purifier_token': 'ab' * 16}
 
     def load_with(self, blocked):
         """load_purifier() with the given modules made unimportable (None in sys.modules)."""
@@ -373,7 +374,8 @@ class PurifierLoading(unittest.TestCase):
             os.makedirs(os.path.join(d, 'cryptography'))
             with open(os.path.join(d, 'cryptography', '__init__.py'), 'w') as f:
                 f.write("raise ImportError('undefined symbol: OPENSSL_x')\n")
-            saved = {k: sys.modules.pop(k) for k in list(sys.modules) if k.split('.')[0] in ('cryptography', 'purifier')}
+            ours = ('cryptography', 'purifier')
+            saved = {k: sys.modules.pop(k) for k in list(sys.modules) if k.split('.')[0] in ours}
             sys.path.insert(0, d)
             logged, orig = [], pw.log
             pw.log = logged.append
@@ -382,7 +384,7 @@ class PurifierLoading(unittest.TestCase):
             finally:
                 pw.log = orig
                 sys.path.remove(d)
-                for k in [k for k in sys.modules if k.split('.')[0] in ('cryptography', 'purifier')]:
+                for k in [k for k in sys.modules if k.split('.')[0] in ours]:
                     del sys.modules[k]
                 sys.modules.update(saved)
         self.assertIn('OPENSSL_x', logged[0])
