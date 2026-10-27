@@ -91,8 +91,11 @@ class Device:
     """One miIO device. Each request does a fresh handshake (it gives the device id and clock the
     request must carry), so there is no session to go stale between /status requests."""
 
-    def __init__(self, ip: str, token_hex: str, timeout: float = 2.5, attempts: int = 2):
-        self.ip, self.timeout, self.attempts = ip, timeout, attempts
+    def __init__(self, ip: str, token_hex: str, timeout: float = 2.5, attempts: int = 2, budget: float = 5.0):
+        # timeout: one handshake + request; budget: a whole read() with its retries, which runs
+        # on the bot's thread, so /status never waits longer than this for the purifier.
+        self.ip, self.timeout, self.attempts, self.budget = ip, timeout, attempts, budget
+        self.port = PORT
         self.token = bytes.fromhex(token_hex)
         if len(self.token) != 16:
             raise ValueError("a miIO token is 32 hex digits")
@@ -127,11 +130,11 @@ class Device:
         except ValueError:
             raise MiioError("unreadable reply (wrong token?)") from None
 
-    def request(self, method: str, params: list | dict) -> dict:
-        """One handshake + request, within self.timeout overall. The socket is connected, so the
-        kernel drops datagrams from any other host or port; a stray packet that still gets
-        through is skipped, not trusted."""
-        deadline = time.monotonic() + self.timeout
+    def request(self, method: str, params: list | dict, until: float) -> dict:
+        """One handshake + request, within self.timeout and before `until` (monotonic). The socket
+        is connected, so the kernel drops datagrams from any other host or port; a stray packet
+        that still gets through is skipped, not trusted."""
+        deadline = min(time.monotonic() + self.timeout, until)
         last_error = "no reply (wrong IP or token?)"
 
         def recv(s: socket.socket) -> bytes:
@@ -143,7 +146,7 @@ class Device:
 
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             try:
-                s.connect((self.ip, PORT))
+                s.connect((self.ip, self.port))
                 s.send(HELLO)
                 while True:
                     hello = recv(s)
@@ -171,21 +174,24 @@ class Device:
             raise (Retry if code in RETRYABLE_CODES else MiioError)(f"device error {error}")
         return reply
 
-    def call(self, method: str, params: list | dict) -> object:
-        """request() with retries on lost packets and the device's transient errors."""
+    def call(self, method: str, params: list | dict, until: float | None = None) -> object:
+        """request() with retries on lost packets and the device's transient errors, all before
+        `until` (default: one budget from now)."""
+        until = time.monotonic() + self.budget if until is None else until
         for attempt in range(self.attempts):
             try:
-                return self.request(method, params).get("result")
+                return self.request(method, params, until).get("result")
             except Retry:
-                if attempt == self.attempts - 1:
+                if attempt == self.attempts - 1 or time.monotonic() >= until:
                     raise
         raise MiioError("no attempts configured")
 
     def read(self) -> dict:
         """{name: value} for the model's properties. Raises MiioError (NoReadings when nothing
-        came back) or UnsupportedModel."""
+        came back) or UnsupportedModel. Takes at most self.budget seconds."""
+        until = time.monotonic() + self.budget
         if not self.model:
-            info = self.call("miIO.info", [])
+            info = self.call("miIO.info", [], until)
             model = info.get("model") if isinstance(info, dict) else None
             if not isinstance(model, str):
                 raise MiioError("miIO.info without a model")
@@ -193,7 +199,7 @@ class Device:
         if self.model not in MODELS:
             raise UnsupportedModel(self.model)
         props = MODELS[self.model]
-        result = self.call("get_properties", [{"did": n, "siid": s, "piid": p} for n, (s, p) in props.items()])
+        result = self.call("get_properties", [{"did": n, "siid": s, "piid": p} for n, (s, p) in props.items()], until)
         if not isinstance(result, list):
             raise MiioError("get_properties result is not a list")
         rows = [r for r in result if isinstance(r, dict)]
