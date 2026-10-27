@@ -166,7 +166,6 @@ class Device:
                 did, stamp = struct.unpack(">II", hello[8:16])
                 if self.did and did != self.did:  # DHCP gave its address to another device
                     raise MiioError(f"a different device (id {did}) answers at {self.ip}")
-                self.did = did
                 self.msg_id = self.msg_id % 9998 + 1  # python-miio's range: 1..9998
                 body = json.dumps({"id": self.msg_id, "method": method, "params": params}).encode() + b"\0"
                 s.send(self.packet(did, stamp + 1, body))
@@ -178,6 +177,7 @@ class Device:
                         continue
                     if isinstance(reply, dict) and reply.get("id") == self.msg_id:
                         break
+                self.did = did  # only now: the reply proved it holds our token, so it is the purifier
             except socket.timeout:
                 raise Retry(last_error) from None
             except OSError as e:
