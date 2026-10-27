@@ -77,12 +77,17 @@ class Watch:
         self.persist_path = os.path.join(cfg.state_dir, "state.json") if cfg.state_dir else ""
         self.st = new_state(int(time.time()))
         outbox = store.load_state(self.persist_path, self.st) if self.persist_path else []
-        if self.st["device_cfg"] != cfg.device:  # a different device configured: forget the old id
-            self.st.update(device_id=0, device_cfg=cfg.device)
-        if cfg.device_id and cfg.device_id != self.st["device_id"]:
-            # Set explicitly, e.g. after replacing the sensor: a new device, a new power-on time,
-            # so start from "unknown" (a silent baseline) instead of reporting a power return.
-            self.st.update(device_id=cfg.device_id, power="unknown", last_on=0)
+        # A different sensor has a different power-on time: its first answer must be a silent
+        # baseline, not a "power is back" post. But the same lamp under a new configured IP, or an
+        # id set before any was learned (e.g. during an outage), keeps the state and its return post.
+        # (prev_device_id is saved, so a restart before that first answer doesn't lose it.)
+        known_id = self.st["device_id"]
+        if self.st["device_cfg"] != cfg.device:
+            self.st.update(device_id=0, device_cfg=cfg.device, prev_device_id=known_id)
+        if cfg.device_id:
+            if known_id and cfg.device_id != known_id:
+                self.rebaseline()
+            self.st.update(device_id=cfg.device_id, prev_device_id=0)
         # A new purifier always comes with a new token: key the remembered id on both (a hash only,
         # the token itself never leaves the settings file).
         purifier_key = f"{cfg.purifier_ip} {hashlib.sha256(cfg.purifier_token.encode()).hexdigest()[:12]}"
@@ -130,11 +135,18 @@ class Watch:
         device_id, up = reply
         if not self.st["device_id"]:
             self.st["device_id"] = device_id  # first answer: remember who the sensor is
+            if self.st["prev_device_id"] and device_id != self.st["prev_device_id"]:
+                self.rebaseline()
+            self.st["prev_device_id"] = 0
             self.persist()
         elif device_id != self.st["device_id"]:
             self.other_id = device_id
             return "other", None
         return "up", up
+
+    def rebaseline(self) -> None:
+        """A new sensor: forget the old one's power state (the next answer is a silent baseline)."""
+        self.st.update(power="unknown", last_on=0, misses=0)
 
     def search_due(self, kind: str) -> bool:
         """Rate-limited, except right before a silence would be declared an outage: a sensor that

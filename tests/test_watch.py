@@ -197,6 +197,41 @@ class Loop(unittest.TestCase):
         self.drive(w2, lambda ip: (99, 120), lambda *a: None, 1)
         self.assertEqual((w2.st["last_on"], w2.tg.pending()), (T0 + 150 - 120, []))
 
+    def test_setting_the_id_before_it_was_ever_learned_keeps_an_ongoing_outage(self):
+        path = os.path.join(self.dir, "state.json")
+        store.save_state(path, {**new_state(T0), "power": "off", "last_off": T0, "device_cfg": "192.0.2.10"}, [])
+        w = watch.Watch(Config(**{**self.cfg.__dict__, "device_id": 7}))
+        self.assertEqual((w.st["device_id"], w.st["power"]), (7, "off"))
+        self.drive(w, lambda ip: (7, 30), lambda *a: None, 1)  # power returns
+        self.assertTrue(w.tg.pending()[0].startswith("✅ Power is back"))
+
+    def reconfigured(self, device="192.0.2.10", device_id=0):
+        """A Watch restarted with new settings, after a run that knew sensor 7 at 192.0.2.10 and was
+        mid-outage."""
+        path = os.path.join(self.dir, "state.json")
+        st = {**new_state(T0), "power": "off", "last_off": T0, "last_on": T0 - 3_600}
+        store.save_state(path, {**st, "device_id": 7, "device_cfg": "192.0.2.10"}, [])
+        return watch.Watch(Config(**{**self.cfg.__dict__, "device": device, "device_id": device_id}))
+
+    def test_a_new_sensor_at_a_new_ip_starts_from_a_silent_baseline(self):
+        for device_id in (0, 99):  # learned on its first answer, or set explicitly
+            with self.subTest(device_id=device_id):
+                w = self.reconfigured(device="192.0.2.20", device_id=device_id)
+                self.drive(w, lambda ip: (99, 60), lambda *a: None, 1)
+                self.assertEqual((w.st["device_id"], w.st["power"], w.tg.pending()), (99, "on", []))
+
+    def test_a_restart_before_the_new_sensor_answers_still_rebaselines(self):
+        w = self.reconfigured(device="192.0.2.20")
+        w.persist()  # e.g. an event or an outbox flush saved the reset state
+        w2 = watch.Watch(Config(**{**self.cfg.__dict__, "device": "192.0.2.20"}))  # restart
+        self.drive(w2, lambda ip: (99, 60), lambda *a: None, 1)
+        self.assertEqual((w2.st["power"], w2.st["prev_device_id"], w2.tg.pending()), ("on", 0, []))
+
+    def test_the_same_lamp_under_a_new_ip_keeps_its_outage(self):
+        w = self.reconfigured(device="192.0.2.20")
+        self.drive(w, lambda ip: (7, 30), lambda *a: None, 1)  # same lamp, power just came back
+        self.assertTrue(w.tg.pending()[0].startswith("✅ Power is back"))
+
     def test_an_unknown_device_breaks_the_silence_streak(self):
         w = watch.Watch(self.cfg)
         self.run_probes(w, [3_600] * 10)
