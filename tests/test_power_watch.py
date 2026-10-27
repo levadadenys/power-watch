@@ -286,6 +286,17 @@ class Bot(unittest.TestCase):
         self.assertEqual(sent, [(7, 'STATUS')])
         self.assertEqual(len(logged), 1)
 
+    def test_a_batch_builds_the_status_once(self):
+        calls, sent = [], []
+        c = pw.Commands(None, frozenset({7, 8}), lambda: calls.append(1) or 'STATUS', 'en')
+        c.strangers = set()
+        c.answer = lambda chat, text: sent.append((chat, text))
+        batch = [self.msg('/status', user=u) for u in (7, 8, 7, 8)]
+        for u in batch:
+            u['message']['date'] = self.now
+        c.handle(batch, self.now)
+        self.assertEqual((len(calls), sorted(sent)), (1, [(7, 'STATUS'), (8, 'STATUS')]))
+
     def test_allowed_users_get_the_status_others_are_logged(self):
         allowed, status = frozenset({7}), lambda: 'STATUS'
         for text in ('/status', '/status@pi_power_watch_chiki_bot', '/start', '?', 'Статус', 'світло'):
@@ -310,15 +321,98 @@ class Config(unittest.TestCase):
         self.assertEqual((cfg['device'], cfg['lang'], cfg['interval'], cfg['off_after'], cfg['gw_port'], cfg['allowed']),
                          ('192.168.0.150', 'en', 15.0, 4, 53, frozenset()))
         self.assertEqual(pw.config({'POWER_WATCH_ALLOWED_USERS': '7, 42 8'})['allowed'], frozenset({7, 42, 8}))
+        cfg = pw.config({'POWER_WATCH_PURIFIER_IP': '192.168.0.155', 'POWER_WATCH_PURIFIER_TOKEN': 'AB' * 16})
+        self.assertEqual((cfg['purifier_ip'], cfg['purifier_token']), ('192.168.0.155', 'ab' * 16))
 
     def test_bad_values_are_config_errors(self):
         for env in ({'POWER_WATCH_OFF_AFTER': '4   # misses'}, {'POWER_WATCH_OFF_AFTER': '0'},
                     {'POWER_WATCH_INTERVAL_S': '0'}, {'POWER_WATCH_TZ': 'Europe/Kyiv  # x'},
                     {'POWER_WATCH_TZ': '../etc'}, {'POWER_WATCH_LANG': 'de'},
                     {'POWER_WATCH_DEVICE_IP': '192.168.0.150 # lamp'}, {'POWER_WATCH_GATEWAY': 'router'},
-                    {'POWER_WATCH_ALLOWED_USERS': '@me'}):
+                    {'POWER_WATCH_ALLOWED_USERS': '@me'}, {'POWER_WATCH_PURIFIER_TOKEN': 'abc'},
+                    {'POWER_WATCH_PURIFIER_TOKEN': 'z' * 32}, {'POWER_WATCH_PURIFIER_IP': 'purifier'}):
             with self.subTest(env=env), self.assertRaises(pw.ConfigError):
                 pw.config(env)
+
+
+class PurifierLoading(unittest.TestCase):
+    cfg = {'purifier_ip': '192.168.0.155', 'purifier_token': 'ab' * 16}
+
+    def load_with(self, blocked):
+        """load_purifier() with the given modules made unimportable (None in sys.modules)."""
+        # Submodules too: once imported, `from cryptography.hazmat... import` finds them directly.
+        blocked = [k for k in list(sys.modules) if k.split('.')[0] in blocked] or blocked
+        blocked = sorted(set(blocked) | {b.split('.')[0] for b in blocked})
+        logged, saved = [], {k: sys.modules.pop(k, None) for k in ('purifier', *blocked)}
+        sys.modules.update(dict.fromkeys(blocked))
+        orig, pw.log = pw.log, logged.append
+        try:
+            return pw.load_purifier(self.cfg), logged
+        finally:
+            pw.log = orig
+            for k, v in saved.items():
+                sys.modules.pop(k, None)
+                if v is not None:
+                    sys.modules[k] = v
+
+    def test_missing_purifier_module_is_named(self):
+        loaded, logged = self.load_with(['purifier'])
+        self.assertIsNone(loaded)
+        self.assertIn('purifier.py is not next to', logged[0])
+
+    def test_missing_cryptography_is_named(self):
+        loaded, logged = self.load_with(['cryptography'])
+        self.assertIsNone(loaded)
+        self.assertIn('install python3-cryptography', logged[0])
+
+    def test_broken_cryptography_does_not_stop_the_watch(self):
+        # Installed but unloadable (e.g. a missing libssl symbol after an upgrade): a plain ImportError.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, 'cryptography'))
+            with open(os.path.join(d, 'cryptography', '__init__.py'), 'w') as f:
+                f.write("raise ImportError('undefined symbol: OPENSSL_x')\n")
+            saved = {k: sys.modules.pop(k) for k in list(sys.modules) if k.split('.')[0] in ('cryptography', 'purifier')}
+            sys.path.insert(0, d)
+            logged, orig = [], pw.log
+            pw.log = logged.append
+            try:
+                self.assertIsNone(pw.load_purifier(self.cfg))
+            finally:
+                pw.log = orig
+                sys.path.remove(d)
+                for k in [k for k in sys.modules if k.split('.')[0] in ('cryptography', 'purifier')]:
+                    del sys.modules[k]
+                sys.modules.update(saved)
+        self.assertIn('OPENSSL_x', logged[0])
+
+    def test_a_broken_purifier_module_does_not_stop_the_watch(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, 'purifier.py'), 'w') as f:
+                f.write("def half_written(:\n")
+            saved = sys.modules.pop('purifier', None)
+            sys.path.insert(0, d)
+            logged, orig = [], pw.log
+            pw.log = logged.append
+            try:
+                self.assertIsNone(pw.load_purifier(self.cfg))
+            finally:
+                pw.log = orig
+                sys.path.remove(d)
+                sys.modules.pop('purifier', None)
+                if saved is not None:
+                    sys.modules['purifier'] = saved
+        self.assertIn('SyntaxError', logged[0])
+
+    def test_half_configured_purifier_is_logged(self):
+        logged = []
+        orig, pw.log = pw.log, logged.append
+        try:
+            self.assertIsNone(pw.load_purifier({'purifier_ip': '192.168.0.155', 'purifier_token': ''}))
+        finally:
+            pw.log = orig
+        self.assertIn('needs both', logged[0])
 
 
 class FakeHTTPError(pw.urllib.error.HTTPError):

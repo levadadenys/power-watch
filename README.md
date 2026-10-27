@@ -13,7 +13,7 @@ A cheap Xiaomi Wi-Fi device plugged straight into the wall (a desk lamp, a smart
 purifier) does, and it answers a simple network "hello" while it has power. power-watch asks it every
 15 seconds.
 
-One Python file, no dependencies, no cloud, no device token.
+Plain Python (standard library only), no cloud, no device token. The optional air purifier readings need `python3-cryptography`.
 
 ## How it works
 
@@ -85,12 +85,18 @@ nc -vz 192.168.0.1 53     # "succeeded" or "refused" = good; set POWER_WATCH_GAT
 **4. Install**
 
 ```sh
-sudo install -m 755 power_watch.py /usr/local/bin/power-watch
+sudo install -d /opt/power-watch && sudo install -m 644 purifier.py /opt/power-watch/
+sudo install -m 755 power_watch.py /opt/power-watch/
+sudo ln -sf /opt/power-watch/power_watch.py /usr/local/bin/power-watch
 sudo install -m 644 systemd/power-watch.service /etc/systemd/system/
 sudo install -m 600 power-watch.env.example /etc/power-watch.env
 sudoedit /etc/power-watch.env          # device IP, token, chat id, language
 sudo systemctl daemon-reload && sudo systemctl enable --now power-watch.service
 ```
+
+**Upgrading:** run only the first three lines (they also replace an older single-file
+`/usr/local/bin/power-watch` with the link), then `sudo systemctl restart power-watch`. Don't
+rerun the `power-watch.env.example` line: it would overwrite your settings.
 
 **5. Check**
 
@@ -113,10 +119,43 @@ In a private chat with the bot, `/status` (or `?`) answers with the current stat
 💡 Power is on since 11:23 (2 h 5 min).
 ```
 
+With an air purifier configured, the reply also has its readings:
+
+```
+💡 Power is on since 11:23 (2 h 5 min).
+🌫 PM2.5: 7 µg/m³ (good)
+Purifier: auto
+🧻 Filter: 63% (~120 days left)
+```
+
 It answers only the Telegram users in `POWER_WATCH_ALLOWED_USERS`. To add yourself, message the
 bot once, find your id in `journalctl -u power-watch` ("ignored a message from user 123…"), put it
 in the env file and restart the service. The service is the bot's only reader of its updates, so
 stop it before running `--find-chats`.
+
+### Air purifier (optional)
+
+Reading a Xiaomi purifier needs more than the power probe does: its **token** (32 hex digits;
+[Xiaomi Cloud Tokens Extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor)
+prints it after a Mi account login) and `python3-cryptography` (`sudo apt install
+python3-cryptography`). Set `POWER_WATCH_PURIFIER_IP` and `POWER_WATCH_PURIFIER_TOKEN`, then check
+with `power-watch --purifier` (run it like the test post in step 5). Re-adding the device in Mi Home
+changes its token.
+
+Supported models (property maps in `purifier.py`, from [miot-spec](https://home.miot-spec.com)):
+
+| Model | Readings |
+|---|---|
+| `xiaomi.airp.cpa4` (Smart Air Purifier 4 Compact) | PM2.5, mode, filter life (% and days), faults |
+
+Adding another MiOT purifier means a `MODELS` entry with its own siid/piid numbers, checked
+against its spec on miot-spec. Its mode and fault values may differ from the 4 Compact's too.
+Humidity and temperature are shown when the map includes them. PRs welcome.
+
+`/status` waits at most about 5 seconds for the purifier. If it doesn't answer in time, the reply
+says so, and the reason is in `journalctl -u power-watch` (for example a wrong token or no
+readings). A broken or missing `python3-cryptography` turns the readings off; it never stops the
+power watch.
 
 ## Configuration
 
@@ -127,6 +166,7 @@ stop it before running `--find-chats`.
 | `POWER_WATCH_DEVICE_IP` | — | the miIO device on mains (required) |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | empty | without them, only the journal |
 | `POWER_WATCH_ALLOWED_USERS` | empty | Telegram user ids the bot answers `/status` for |
+| `POWER_WATCH_PURIFIER_IP`, `POWER_WATCH_PURIFIER_TOKEN` | empty | optional air purifier for `/status` |
 | `POWER_WATCH_LANG` | `en` | `en` or `uk` |
 | `POWER_WATCH_TZ` | system local time | IANA zone for times in messages, e.g. `Europe/Kyiv` |
 | `POWER_WATCH_LABEL` | empty | prefix for every message, e.g. a place name |
