@@ -220,6 +220,13 @@ class Loop(unittest.TestCase):
                 self.drive(w, lambda ip: (99, 60), lambda *a: None, 1)
                 self.assertEqual((w.st["device_id"], w.st["power"], w.tg.pending()), (99, "on", []))
 
+    def test_a_restart_before_the_new_sensor_answers_still_rebaselines(self):
+        w = self.reconfigured(device="192.0.2.20")
+        w.persist()  # e.g. an event or an outbox flush saved the reset state
+        w2 = watch.Watch(Config(**{**self.cfg.__dict__, "device": "192.0.2.20"}))  # restart
+        self.drive(w2, lambda ip: (99, 60), lambda *a: None, 1)
+        self.assertEqual((w2.st["power"], w2.st["prev_device_id"], w2.tg.pending()), ("on", 0, []))
+
     def test_the_same_lamp_under_a_new_ip_keeps_its_outage(self):
         w = self.reconfigured(device="192.0.2.20")
         self.drive(w, lambda ip: (7, 30), lambda *a: None, 1)  # same lamp, power just came back
