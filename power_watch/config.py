@@ -32,6 +32,7 @@ class Config:
     gw_port: int = 53
     interval: float = 15
     off_after: int = 4
+    device_id: int = 0  # the sensor's miIO id; 0 = learn it from the first answer
     run_dir: str = ""  # systemd's RUNTIME_DIRECTORY: the live state file goes here
     state_dir: str = ""  # systemd's STATE_DIRECTORY: state.json goes here
 
@@ -90,6 +91,7 @@ def from_env(env: Mapping[str, str] | None = None) -> Config:
         gw_port=num("POWER_WATCH_GATEWAY_PORT", Config.gw_port, int, 1),
         interval=num("POWER_WATCH_INTERVAL_S", Config.interval, float, 1),
         off_after=num("POWER_WATCH_OFF_AFTER", Config.off_after, int, 1),
+        device_id=num("POWER_WATCH_DEVICE_ID", Config.device_id, int, 0),
         run_dir=get("RUNTIME_DIRECTORY"),
         state_dir=get("STATE_DIRECTORY"),
     )
