@@ -258,7 +258,11 @@ class Lines(unittest.TestCase):
         )
 
     def test_every_language_has_every_key(self):
-        self.assertEqual(set(pu.MESSAGES["en"]), set(pu.MESSAGES["uk"]))
+        from power_watch.messages import MESSAGES as POWER_MESSAGES
+
+        self.assertEqual(set(pu.MESSAGES), set(POWER_MESSAGES), "the same languages as messages.py")
+        for lang, msgs in pu.MESSAGES.items():
+            self.assertEqual(set(msgs), set(pu.MESSAGES["en"]), lang)
 
 
 if __name__ == "__main__":

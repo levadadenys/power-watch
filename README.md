@@ -4,61 +4,96 @@
 ![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Know when the power goes out at home, and tell a Telegram channel.
+**Know when the power goes out at home, and tell a Telegram channel.** A Raspberry Pi watches a
+cheap Xiaomi Wi-Fi lamp: while the lamp answers, there is power. Neighbours subscribe to the
+channel; you can ask the bot `/status` (and your air purifier's readings) at any time.
 
-```
-⚡ Power is out since 14:02.
-✅ Power is back at 16:40, after 2 h 38 min.
-```
+<p align="center"><img src="docs/channel.svg" width="560" alt="Channel posts: power is out since 14:02; power is back at 16:40, after 2 h 38 min. A private /status reply with the air quality."></p>
 
-Built for places with regular power outages, where the router and a small always-on
-box (a Raspberry Pi) sit on a UPS. Because they're on the UPS, they never notice an outage.
-A cheap Xiaomi Wi-Fi device plugged straight into the wall (a desk lamp, a smart plug, an air
-purifier) does, and it answers a simple network "hello" while it has power. power-watch asks it every
-15 seconds.
+Plain Python (standard library only; the optional purifier readings add `cryptography`), no cloud
+service, no device pairing. One command to install.
 
-Plain Python (standard library only), no cloud, no device token. The optional air purifier readings need `python3-cryptography`.
+## Why
+
+In Ukraine, scheduled and emergency power outages are part of life. My router and a Raspberry Pi
+sit on a UPS, so the Pi never notices an outage itself, and the internet keeps working through
+most of them. That raised a question the Pi couldn't answer: *is the power on at home right now?*
+
+The answer turned out to be on my desk. A Xiaomi lamp plugged straight into the wall answers a
+tiny network "hello" while it has power, and each answer includes **how long it has been on**. So
+the Pi doesn't just see that power came back: it knows *exactly when*, even if the network was
+down at that moment.
+
+And it usually is. While debugging, I noticed that every power return dropped the Pi's network for
+about two minutes: the router reboots when the UPS switches back to mains (the lamp powered on in
+the same second as the network link went down). power-watch is built around that: posts wait
+until the network is back and still carry the right times.
 
 ## How it works
 
-- **Probe.** Xiaomi Wi-Fi devices speak the miIO protocol. A 32-byte "hello" to UDP port 54321
-  gets a reply without any pairing or token. The reply carries the device's **uptime**, so
-  `now − uptime` is the exact moment it last powered on.
-- **Outage.** The device stops answering (4 probes in a row, about a minute) while the router still
-  answers. If the router itself is unreachable, the device's silence means nothing and is ignored.
-  After the router has been unreachable, or right after a start, the count begins only once the
-  router has answered for a minute, so detection then takes about 2 minutes.
-- **Return.** The device answers again with a new power-on time. That time is the moment power came
-  back, even if the network was down at that moment. Many routers reboot when mains returns and
-  the UPS switches back, so the "power is back" post usually goes out a couple of minutes late
-  with the correct time.
-- **No false alarms from Wi-Fi.** If the device comes back *without* having rebooted, power never
-  went out, and the channel gets a correction. After the router reboots, the device gets a minute
-  of grace to rejoin Wi-Fi before its silence counts.
-- **Restarts.** The power state and any posts not yet sent survive restarts
-  (`/var/lib/power-watch/state.json`, written only on changes), so a restart neither repeats nor
-  loses an outage.
-- **Clock.** Times come from the box's clock, so it waits for NTP after a boot (a Raspberry Pi has
-  no clock battery), and if the clock is stepped later, the stored times are shifted with it.
+```mermaid
+flowchart LR
+    subgraph mains [On mains power]
+        lamp["💡 Xiaomi lamp<br/>(the sensor)"]
+    end
+    subgraph ups [On the UPS]
+        router["📶 Router"]
+        pi["Raspberry Pi<br/>power-watch"]
+    end
+    pi -- "hello every 15 s<br/>reply: uptime" --> lamp
+    pi -- "is the router up?" --> router
+    pi -- "⚡ / ✅ posts" --> channel["📣 Telegram channel"]
+    you["🙋 You"] -- "/status" --> pi
+```
 
-## You need
+- **The probe.** Xiaomi Wi-Fi devices speak the miIO protocol: a 32-byte "hello" to UDP port
+  54321 gets a reply without any pairing or token, and the reply carries the device's **uptime**.
+  `now − uptime` is the moment it last powered on.
+- **An outage** is the lamp going silent (4 probes in a row, about a minute) **while the router
+  still answers**. If the router itself is unreachable, the lamp's silence says nothing.
+- **A return** is the lamp answering with a *new* power-on time: that's when power came back.
 
-- An always-on Linux box with systemd and Python 3.9+, on the same LAN as the device. Put it and the
-  router on a UPS (otherwise there is nobody left to post during an outage).
-- A Xiaomi / Mi Home Wi-Fi device on **mains** power, NOT on the UPS. Anything that works with the Mi
-  Home app over Wi-Fi usually speaks miIO. Bluetooth and Zigbee devices don't.
-- A Telegram bot and a channel (below), unless you only want the journal.
+```mermaid
+stateDiagram-v2
+    direction LR
+    powered: power on
+    out: power out
+    [*] --> powered: lamp answers
+    powered --> out: silent 4x while the router answers, ⚡ post
+    out --> powered: new power-on time, ✅ post with the duration
+    out --> powered: same power-on time, ↩️ false alarm (only Wi-Fi dropped)
+    powered --> powered: new power-on time between two answers, ✅ short outage
+```
 
-## Setup
+What it handles, each with a test (the state machine in `power_watch/state.py` is pure):
 
-**1. Telegram** (skip it if the journal is enough)
+- **Router reboots.** After the router has been away, the lamp gets a minute to rejoin Wi-Fi before
+  its silence counts, so a router reboot isn't read as an outage. (A lamp that needs more than
+  about two minutes gets a "false alarm" correction instead.)
+- **Wi-Fi hiccups.** If the lamp comes back *without* having rebooted, power never went out, and
+  the channel gets a correction.
+- **No internet.** Posts queue up and go out once Telegram is reachable, with the real times.
+- **Restarts.** The power state and unsent posts are saved (on changes only, to spare the SD card),
+  so a restart neither repeats nor loses an outage.
+- **Clocks.** The Pi has no clock battery: power-watch waits for NTP after a boot and adjusts
+  saved times if the clock jumps. The lamp's own slow clock drift is followed too.
 
-1. In Telegram, message [@BotFather](https://t.me/BotFather) → `/newbot` and copy the token.
-2. Create a channel. Make it public with an @name, or private and share an invite link.
-3. Channel settings → Administrators → add your bot, with permission to post messages.
-4. For a public channel the chat id is `@channelname`. For a private one, post anything in the
-   channel after adding the bot, leave the channel empty in the installer, and see "Private
-   channel id" below.
+## What you need
+
+- An always-on Linux box with systemd and Python 3.9+ (a Raspberry Pi is perfect), wired or on
+  Wi-Fi in the same network as the lamp. **Put it and the router on a UPS.**
+- A Xiaomi / Mi Home **Wi-Fi** device on **mains** power, NOT on the UPS: a lamp, a smart plug, an
+  air purifier. Anything that works with the Mi Home app over Wi-Fi usually speaks miIO;
+  Bluetooth and Zigbee devices don't.
+- A Telegram bot and a channel, unless the system journal is enough.
+
+## Quick start
+
+**1. Telegram** (skip if the journal is enough)
+
+1. Message [@BotFather](https://t.me/BotFather) → `/newbot`, and copy the token.
+2. Create a channel: public with an @name, or private with an invite link.
+3. Channel settings → Administrators → add the bot, allowed to post messages.
 
 **2. Install**
 
@@ -67,51 +102,38 @@ git clone https://github.com/levadadenys/power-watch && cd power-watch
 sudo ./install.sh
 ```
 
-The installer builds one self-contained executable (`/usr/local/bin/power-watch`, Python's
-standard library only), installs the systemd unit, and on the first run:
+The installer builds one self-contained executable (`/usr/local/bin/power-watch`), installs the
+systemd service and starts it. On the first run it:
 
-- lists the Xiaomi devices on your network. Pick the one plugged into mains power, NOT into the
-  UPS. Unplug it and run `power-watch --scan 192.168.0.0/24` again if you're unsure which it is.
-- asks for the bot token, the channel, who may ask the bot `/status`, and the language, and writes
-  them to `/etc/power-watch.env` (mode 600).
+- lists the Xiaomi devices on your network. Pick the one on **mains** power (not sure which?
+  unplug it and run `power-watch --scan 192.168.0.0/24` again);
+- asks for the bot token (hidden), the channel (`@name`, or empty for a private one, see the FAQ),
+  who may ask the bot `/status`, and the language (English or Ukrainian), and saves them in
+  `/etc/power-watch.env` (readable by root only).
 
-Then it starts the service. Run it again after a `git pull` to upgrade: your settings are kept.
-`sudo ./install.sh --uninstall` removes it.
-
-Two things worth doing once:
-
-- In the router's settings, reserve the device's address for its MAC (DHCP reservation / static
-  lease) so it never changes.
-- Check that the router answers the TCP port power-watch probes (53 by default). A refusal is
-  fine; a timeout is not: `nc -vz 192.168.0.1 53` should say "succeeded" or "refused". Otherwise
-  set `POWER_WATCH_GATEWAY_PORT`.
-
-**Private channel id:** `sudo systemctl stop power-watch`, then run `power-watch --find-chats` the
-way the test below runs `--test-notify`, put the `-100…` id in `TELEGRAM_CHAT_ID`, and start the
-service again. (While it runs, the service is the bot's only reader of its updates.)
+To upgrade, `git pull` and run it again: your settings are kept. `sudo ./install.sh --uninstall`
+removes the program and the service; your settings and state stay.
 
 **3. Check**
 
 ```sh
-# a test post in the channel, with the env file read exactly as the service reads it:
 sudo systemd-run --pipe --wait -q -p EnvironmentFile=/etc/power-watch.env -p DynamicUser=yes \
-  /usr/local/bin/power-watch --test-notify
-journalctl -u power-watch -f       # one line per change; config errors show here too
-cat /run/power-watch/state         # live state
+  /usr/local/bin/power-watch --test-notify      # a test post in the channel
+journalctl -u power-watch -f                     # one line per change
 ```
 
-Then unplug the device: after about a minute the channel says the power is out, and when you
-plug it back in it says the power is back.
+Give it a couple of minutes after the install first: the watch needs about a minute of a healthy
+network before it trusts the lamp's silence. Then unplug the lamp for three minutes: after about
+one, the channel says the power is out, and when you plug it back in, that it's back.
+
+**4. Once, in the router:** reserve the lamp's address for its MAC (*DHCP reservation* or *static
+lease*). If the router ever gave the lamp a new address, its old one would go silent, and that
+looks exactly like an outage.
 
 ## Ask the bot
 
-In a private chat with the bot, `/status` (or `?`) answers with the current state:
-
-```
-💡 Power is on since 11:23 (2 h 5 min).
-```
-
-With an air purifier configured, the reply also has its readings:
+In a private chat, `/status` (or `?`) answers with the current state, plus the air purifier's
+readings when one is set up:
 
 ```
 💡 Power is on since 11:23 (2 h 5 min).
@@ -120,100 +142,93 @@ Purifier: auto
 🧻 Filter: 63% (~120 days left)
 ```
 
-It answers only the Telegram users in `POWER_WATCH_ALLOWED_USERS`. To add yourself, message the
-bot once, find your id in `journalctl -u power-watch` ("ignored a message from user 123…"), put it
-in the env file and restart the service. The service is the bot's only reader of its updates, so
-stop it before running `--find-chats`.
+The bot answers only the people in `POWER_WATCH_ALLOWED_USERS`. To add someone, have them message
+the bot once: their id appears in `journalctl -u power-watch` ("ignored a message from user 123…").
+Put it in the settings and `sudo systemctl restart power-watch`.
 
 ### Air purifier (optional)
 
-Reading a Xiaomi purifier needs more than the power probe does: its **token** (32 hex digits;
-[Xiaomi Cloud Tokens Extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor)
-prints it after a Mi account login) and `python3-cryptography` (`sudo apt install
-python3-cryptography`). Set `POWER_WATCH_PURIFIER_IP` and `POWER_WATCH_PURIFIER_TOKEN`, then check
-with `power-watch --purifier` (run it like the test post in step 3). Re-adding the device in Mi Home
-changes its token.
+Reading a purifier needs its **token** (32 hex digits) and `python3-cryptography`:
 
-Supported models (property maps in `power_watch/purifier.py`, from [miot-spec](https://home.miot-spec.com)):
+1. Get the token with [Xiaomi Cloud Tokens Extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor)
+   (it logs in to your Mi account; run it yourself). Re-adding the device in Mi Home changes it.
+2. `sudo apt install python3-cryptography`
+3. Set `POWER_WATCH_PURIFIER_IP` and `POWER_WATCH_PURIFIER_TOKEN` (`sudoedit /etc/power-watch.env`),
+   check with `power-watch --purifier` (run it like the test post above), then restart the service.
 
-| Model | Readings |
+| Supported model | Readings |
 |---|---|
 | `xiaomi.airp.cpa4` (Smart Air Purifier 4 Compact) | PM2.5, mode, filter life (% and days), faults |
 
-Adding another MiOT purifier means a `MODELS` entry with its own siid/piid numbers, checked
-against its spec on miot-spec. Its mode and fault values may differ from the 4 Compact's too.
-Humidity and temperature are shown when the map includes them. PRs welcome.
-
-`/status` waits at most about 5 seconds for the purifier. If it doesn't answer in time, the reply
-says so, and the reason is in `journalctl -u power-watch` (for example a wrong token or no
-readings). A broken or missing `python3-cryptography` turns the readings off; it never stops the
-power watch.
+Another MiOT purifier needs an entry in `MODELS` in `power_watch/purifier.py`, with its property
+numbers from [miot-spec](https://home.miot-spec.com). PRs welcome. A purifier problem never
+affects the power status: `/status` waits at most ~5 s for it and says if it isn't answering.
 
 ## Configuration
 
-`/etc/power-watch.env` (see [`power-watch.env.example`](power-watch.env.example)):
+`/etc/power-watch.env` ([example](power-watch.env.example)). One `KEY=value` per line; comments
+only on their own lines.
 
 | Variable | Default | |
 |---|---|---|
-| `POWER_WATCH_DEVICE_IP` | — | the miIO device on mains (required) |
+| `POWER_WATCH_DEVICE_IP` | — | the sensor device, on mains power (required) |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | empty | without them, only the journal |
 | `POWER_WATCH_ALLOWED_USERS` | empty | Telegram user ids the bot answers `/status` for |
-| `POWER_WATCH_PURIFIER_IP`, `POWER_WATCH_PURIFIER_TOKEN` | empty | optional air purifier for `/status` |
 | `POWER_WATCH_LANG` | `en` | `en` or `uk` |
-| `POWER_WATCH_TZ` | system local time | IANA zone for times in messages, e.g. `Europe/Kyiv` |
-| `POWER_WATCH_LABEL` | empty | prefix for every message, e.g. a place name |
-| `POWER_WATCH_GATEWAY` | default route | the router's IP |
-| `POWER_WATCH_GATEWAY_PORT` | `53` | TCP port probed on the router. A refused connection counts as "up" |
+| `POWER_WATCH_TZ` | system time zone | for times in messages, e.g. `Europe/Kyiv` |
+| `POWER_WATCH_LABEL` | empty | a prefix for every post, e.g. a place name |
+| `POWER_WATCH_PURIFIER_IP`, `POWER_WATCH_PURIFIER_TOKEN` | empty | optional air purifier |
+| `POWER_WATCH_GATEWAY` | the default route | the router's IP |
+| `POWER_WATCH_GATEWAY_PORT` | `53` | TCP port checked on the router; "connection refused" counts as up |
 | `POWER_WATCH_INTERVAL_S` | `15` | seconds between probes |
-| `POWER_WATCH_OFF_AFTER` | `4` | missed probes before "off", and the grace after a router outage |
+| `POWER_WATCH_OFF_AFTER` | `4` | missed probes before "out" (and the grace after a router outage) |
 
-Messages are in English or Ukrainian. To add a language, add a block to `MESSAGES` in
-`power_watch/messages.py` (the tests check that every language has every key).
+A bad value stops the service with the reason in the journal, instead of restarting forever.
+
+## FAQ
+
+**It posted "power is out", but the power is on.**
+Most likely the lamp got a new IP address. `power-watch --scan 192.168.0.0/24` shows where it is
+now: put that address in `POWER_WATCH_DEVICE_IP` (`sudoedit /etc/power-watch.env`), `sudo
+systemctl restart power-watch`, and reserve the same address in the router (step 4). Otherwise
+the lamp may be dropping off Wi-Fi for over a minute; the channel then gets a "false alarm"
+correction when it's back.
+
+**It never says the power is out.**
+power-watch only counts the lamp's silence while the router answers. Check the router answers its
+port: `nc -vz 192.168.0.1 53` should say "succeeded" or "refused". A timeout means it drops that
+port; set `POWER_WATCH_GATEWAY_PORT` to one it answers (80, 443).
+
+**How do I find a private channel's id?**
+`sudo systemctl stop power-watch` (while it runs, the service is the bot's only reader of updates,
+and `--find-chats` would get "409 Conflict"). Run `power-watch --find-chats` the way the test post
+above is run: the first run also tells Telegram to deliver channel posts to the bot. Post anything
+in the channel (with the bot already an admin), run `--find-chats` again, put the `-100…` id in
+`TELEGRAM_CHAT_ID`, and `sudo systemctl start power-watch`.
+
+**The "power is back" post came a few minutes late.**
+Expected when your router reboots on power return: the post waits for the network. The time in it
+is the real one.
+
+**"Power came back at 16:40 after a short or unobserved outage"?**
+The lamp rebooted between two probes: an outage shorter than about a minute, one that happened
+while the Pi or the router was offline or the watch was restarting, or simply someone unplugging
+the lamp.
+
+**Is a public channel a privacy risk?**
+It tells anyone when your home has no power. Posts contain no address or IPs (use
+`POWER_WATCH_LABEL` only if you want a place name). Use a private channel to choose who sees it.
+
+**Can I use another device than a Xiaomi one?**
+Not yet. A plain ping would work with anything, but it has no power-on time, so it couldn't tell a
+Wi-Fi hiccup from a real outage, or say when power came back. PRs welcome.
 
 ## Live state for other tools
 
-`/run/power-watch/state` is rewritten on every probe as `key=value` lines. These keys are stable:
-
-| Key | |
-|---|---|
-| `power` | `on`, `off` or `unknown` |
-| `since` | when the current state began (epoch seconds) |
-| `last_on` | when the device last powered on |
-| `last_off` | the start of the last outage |
-| `last_seen` | the device's last answer |
-| `checked` | the last probe. If it's more than a few intervals old, the watch isn't running |
-
-For example, an alert script can tell whether a network drop was the router rebooting on power
-return (`last_on` within a minute or two of the drop).
-
-## Things to know
-
-- **Privacy.** A public channel tells anyone when your home has no power. Messages don't include
-  an address or IPs. Use `POWER_WATCH_LABEL` only if you want a place name in them, and use a
-  private channel if you'd rather choose who sees it.
-- **If the internet also goes down during an outage,** posts wait and go out once Telegram is
-  reachable, with the real times in them. They also survive a restart of the service.
-- An outage shorter than about a minute, or one that happens while the box itself is offline, is
-  reported as "back at HH:MM after a short or unobserved outage". So is anything else that
-  reboots the device: unplugging it, a firmware update.
-- If Telegram accepts a post but the reply is lost on the way back, the retry posts it twice.
-  Telegram has no way to deduplicate it, and it's rare.
-- A setting with a bad value stops the service (exit 2) with the reason in the journal, instead of
-  restarting forever.
-- Only miIO devices for now. A generic ping/TCP probe would work with any device, but it gives
-  no power-on time, so it couldn't tell a Wi-Fi hiccup from a real outage. PRs welcome.
-
-## Українською
-
-power-watch повідомляє в Telegram-канал, коли вдома зникає і повертається світло. Сам «датчик» —
-будь-який Wi-Fi пристрій Xiaomi (лампа, розетка), увімкнений у звичайну розетку (не в ДБЖ). Роутер
-і Raspberry Pi мають бути на ДБЖ. Для українських повідомлень у `/etc/power-watch.env` вкажіть
-`POWER_WATCH_LANG=uk`.
-
-```
-⚡ Світла немає з 14:02.
-✅ Світло повернулося о 16:40. Не було 2 год 38 хв.
-```
+`/run/power-watch/state` is rewritten on every probe as `key=value` lines with stable keys:
+`power` (`on`/`off`/`unknown`), `since`, `last_on` (the lamp's last power-on), `last_off`,
+`last_seen` and `checked`; every time is in epoch seconds, 0 meaning never. For example, an alert script can tell whether a network
+drop was the router rebooting on power return: `last_on` within a minute or two of the drop.
 
 ## Development
 
@@ -223,9 +238,40 @@ python3 -m unittest discover -s tests -t .         # tests (purifier tests need 
 pip install -r requirements-dev.txt && ruff check . && ruff format --check . && mypy
 ```
 
-The code is the `power_watch/` package. Its docstring maps the modules, and `state.py` (the outage
-logic) is pure, so every edge case is a unit test.
+```
+power_watch/
+  probe.py     the miIO hello, the router check, LAN scan
+  state.py     the outage state machine (pure: every edge case is a unit test)
+  messages.py  posts and /status texts, per language
+  store.py     the saved and the live state files
+  telegram.py  channel posts that survive outages
+  bot.py       private /status replies
+  purifier.py  optional air purifier readings (encrypted miIO)
+  config.py    validated settings
+  watch.py     the main loop
+  cli.py       the power-watch command
+install.sh     build (a stdlib zipapp), install, upgrade, uninstall
+```
+
+CI runs the tests on Python 3.9–3.13 (and with `cryptography` on 3.9 and 3.13), ruff, mypy and
+shellcheck, and checks that the build is reproducible. To add a language, add a block to
+`MESSAGES` in `power_watch/messages.py` and in `power_watch/purifier.py`; the tests check that
+every language has every key.
+
+## Українською
+
+power-watch пише в Telegram-канал, коли вдома зникає і повертається світло. Датчик — будь-який
+Wi-Fi пристрій Xiaomi (лампа, розетка), увімкнений у звичайну розетку, **не** в ДБЖ. Роутер і
+Raspberry Pi мають бути на ДБЖ. Встановлення: `sudo ./install.sh`, мова повідомлень — `uk`.
+
+```
+⚡ Світла немає з 14:02.
+✅ Світло повернулося о 16:40. Не було 2 год 38 хв.
+```
+
+Боту можна написати `/status` (або «світло»): дозволеним користувачам він відповість, чи є світло,
+і покаже повітря з очищувача, якщо його налаштовано.
 
 ## License
 
-MIT
+[MIT](LICENSE)
