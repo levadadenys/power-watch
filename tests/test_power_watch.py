@@ -9,7 +9,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import power_watch as pw  # noqa: E402
+import power_watch as pw
 
 INTERVAL = 15
 OFF_AFTER = 4
@@ -280,7 +280,7 @@ class Bot(unittest.TestCase):
             strangers = [self.msg('/status', user=99) for _ in range(3)]
             for u in strangers:
                 u['message']['date'] = self.now
-            c.handle(fresh + [old] + strangers, self.now)
+            c.handle([*fresh, old, *strangers], self.now)
         finally:
             pw.log = orig
         self.assertEqual(sent, [(7, 'STATUS')])
@@ -307,8 +307,9 @@ class Bot(unittest.TestCase):
 class Config(unittest.TestCase):
     def test_defaults(self):
         cfg = pw.config({'POWER_WATCH_DEVICE_IP': '192.168.0.150'})
-        self.assertEqual((cfg['device'], cfg['lang'], cfg['interval'], cfg['off_after'], cfg['gw_port'], cfg['allowed']),
-                         ('192.168.0.150', 'en', 15.0, 4, 53, frozenset()))
+        self.assertEqual(
+            (cfg['device'], cfg['lang'], cfg['interval'], cfg['off_after'], cfg['gw_port'], cfg['allowed']),
+            ('192.168.0.150', 'en', 15.0, 4, 53, frozenset()))
         self.assertEqual(pw.config({'POWER_WATCH_ALLOWED_USERS': '7, 42 8'})['allowed'], frozenset({7, 42, 8}))
 
     def test_bad_values_are_config_errors(self):
