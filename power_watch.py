@@ -18,6 +18,8 @@ Stdlib only, Python 3.9+. Config (environment; see power-watch.env.example):
   TELEGRAM_BOT_TOKEN        bot that posts to the channel (optional: without it,
   TELEGRAM_CHAT_ID          the journal is the only output); chat id or @channel
   POWER_WATCH_LANG          message language: en (default) or uk
+  POWER_WATCH_PURIFIER_IP   optional Xiaomi air purifier whose readings /status adds (purifier.py;
+  POWER_WATCH_PURIFIER_TOKEN  needs its 32-hex-digit token and python3-cryptography)
   POWER_WATCH_ALLOWED_USERS Telegram user ids (comma-separated) the bot answers /status for in a
                             private chat; others get no reply (their id is logged to add them)
   POWER_WATCH_TZ            IANA zone for times in messages, default: system local
@@ -35,6 +37,7 @@ Usage:
   power-watch --probe IP        one probe: is the device up, and since when
   power-watch --find-chats      list the chats the bot was added to (the id of a private channel)
   power-watch --test-notify     send a test message to the Telegram chat
+  power-watch --purifier        read the air purifier once
 """
 
 from __future__ import annotations
@@ -539,6 +542,9 @@ def config(env: dict | None = None) -> dict:
         allowed = frozenset(int(u) for u in get("POWER_WATCH_ALLOWED_USERS").replace(",", " ").split())
     except ValueError:
         raise ConfigError("POWER_WATCH_ALLOWED_USERS must be numeric Telegram user ids, comma-separated") from None
+    purifier_token = get("POWER_WATCH_PURIFIER_TOKEN").lower()
+    if purifier_token and (len(purifier_token) != 32 or any(c not in "0123456789abcdef" for c in purifier_token)):
+        raise ConfigError("POWER_WATCH_PURIFIER_TOKEN must be 32 hex digits")
     lang = get("POWER_WATCH_LANG", "en")
     if lang not in MESSAGES:
         raise ConfigError(f"POWER_WATCH_LANG={lang!r}: one of {', '.join(MESSAGES)}")
@@ -557,6 +563,8 @@ def config(env: dict | None = None) -> dict:
         "tz": tz,
         "label": get("POWER_WATCH_LABEL"),
         "allowed": allowed,
+        "purifier_ip": ip("POWER_WATCH_PURIFIER_IP"),
+        "purifier_token": purifier_token,
         "gateway": ip("POWER_WATCH_GATEWAY"),
         "gw_port": num("POWER_WATCH_GATEWAY_PORT", "53", int, 1),
         "interval": num("POWER_WATCH_INTERVAL_S", "15", float, 1),
@@ -612,9 +620,14 @@ def watch(cfg: dict) -> int:
     if cfg["token"] and cfg["chat"]:
         tg = Telegram(cfg["token"], cfg["chat"], outbox, on_sent=persist).start()
     if cfg["token"]:
+        purifier = load_purifier(cfg)
+
+        def status() -> str:
+            text = status_text(st, cfg["lang"], cfg["tz"], time.time(), 3 * interval)
+            return "\n".join([text, *purifier[0].status(purifier[1], cfg["lang"])]) if purifier else text
+
         # Listen even with nobody allowed yet: an unknown user's message logs the id to allow.
-        Commands(tg or Telegram(cfg["token"], ""), cfg["allowed"],
-                 lambda: status_text(st, cfg["lang"], cfg["tz"], time.time(), 3 * interval), cfg["lang"]).start()
+        Commands(tg or Telegram(cfg["token"], ""), cfg["allowed"], status, cfg["lang"]).start()
     log(f"power-watch: device {cfg['device']}, gateway {cfg['gateway'] or '(default route)'}:{cfg['gw_port']}, "
         f"every {interval:g}s, off after {off_after} misses, channel {'on' if tg else 'off'}, "
         f"bot {'on' if cfg['token'] else 'off'} ({len(cfg['allowed'])} user(s)), "
@@ -649,6 +662,41 @@ def watch(cfg: dict) -> int:
             except OSError as e:
                 log(f"power-watch: cannot write {run_dir}/state: {e}")
         time.sleep(max(0.0, interval - (time.monotonic() - m0)))
+
+
+def load_purifier(cfg: dict) -> tuple | None:
+    """(purifier module, Device) when one is configured and its dependency is installed. Optional
+    by design: without python3-cryptography the power watch still runs, minus the readings."""
+    if not (cfg["purifier_ip"] and cfg["purifier_token"]):
+        if cfg["purifier_ip"] or cfg["purifier_token"]:
+            log("power-watch: purifier needs both POWER_WATCH_PURIFIER_IP and POWER_WATCH_PURIFIER_TOKEN")
+        return None
+    try:
+        import purifier
+    except ImportError as e:
+        log(f"power-watch: purifier readings off — {e} (install python3-cryptography)")
+        return None
+    return purifier, purifier.Device(cfg["purifier_ip"], cfg["purifier_token"])
+
+
+def read_purifier(cfg: dict) -> int:
+    loaded = load_purifier(cfg)
+    if not loaded:
+        log("power-watch: no purifier configured")
+        return 2
+    module, dev = loaded
+    try:
+        values = dev.read()
+    except module.MiioError as e:
+        log(f"{cfg['purifier_ip']}: {e}")
+        return 1
+    except KeyError:
+        log(f"{cfg['purifier_ip']}: model {dev.model} has no property map in purifier.py yet")
+        return 1
+    log(f"{cfg['purifier_ip']}: {dev.model} {values}")
+    for line in module.status_lines(values, cfg["lang"]):
+        log(line)
+    return 0
 
 
 def arp_table() -> dict[str, str]:
@@ -750,6 +798,7 @@ def main() -> int:
     g.add_argument("--probe", metavar="IP", help="probe one device once")
     g.add_argument("--find-chats", action="store_true", help="list chats the bot was added to, with their ids")
     g.add_argument("--test-notify", action="store_true", help="send a test message to the Telegram chat")
+    g.add_argument("--purifier", action="store_true", help="read the configured air purifier once")
     args = p.parse_args()
     if args.scan:
         return scan(args.scan)
@@ -764,6 +813,8 @@ def main() -> int:
         return test_notify(cfg)
     if args.find_chats:
         return find_chats(cfg)
+    if args.purifier:
+        return read_purifier(cfg)
     return watch(cfg)
 
 
