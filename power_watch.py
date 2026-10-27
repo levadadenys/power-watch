@@ -13,7 +13,7 @@ switches back, taking the network down for a couple of minutes).
 Silence only counts as "power off" while the router answers: when the box's
 own link is down the device is unreachable for an unrelated reason.
 
-Stdlib only, Python 3.10+. Config (environment; see power-watch.env.example):
+Stdlib only, Python 3.9+. Config (environment; see power-watch.env.example):
   POWER_WATCH_DEVICE_IP     miIO device on mains power, NOT on the UPS (required)
   TELEGRAM_BOT_TOKEN        bot that posts to the channel (optional: without it,
   TELEGRAM_CHAT_ID          the journal is the only output); chat id or @channel
@@ -34,11 +34,12 @@ Usage:
   power-watch --test-notify     send a test message to the Telegram chat
 """
 
+from __future__ import annotations
+
 import argparse
 import ipaddress
 import json
 import os
-import queue
 import socket
 import sys
 import threading
@@ -47,13 +48,18 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone, tzinfo
+from typing import Callable
 
 MIIO_PORT = 54321
 # miIO hello: magic 0x2131, length 32, then 28 bytes of 0xff.
 MIIO_HELLO = bytes.fromhex("21310020" + "ff" * 28)
-# A real power cut reboots the device; a boot time that moved by more than this is a power
-# return. Within it, the same boot (uptime and clock jitter).
+# A real power cut reboots the device; a boot time that moved by more than this since the
+# previous answer is a power return. Within it, the same boot (uptime and clock jitter; the
+# known boot time follows the device's slow clock drift answer by answer).
 BOOT_JUMP_S = 30
+# A wall-clock jump larger than this between two probes (NTP stepping the clock) shifts every
+# stored time by the same amount instead of being read as a reboot.
+CLOCK_STEP_S = 5
 
 MESSAGES = {
     "en": {
@@ -85,8 +91,13 @@ MESSAGES = {
 # whether a network drop was a power return.
 PUBLIC_KEYS = ("power", "since", "last_on", "last_off", "last_seen", "checked")
 # Kept across restarts in $STATE_DIRECTORY/state.json (written on transitions only, to spare
-# SD cards), so a restart neither repeats nor loses an outage.
+# SD cards) together with the unsent posts, so a restart neither repeats nor loses an outage.
 PERSIST_KEYS = ("power", "since", "last_on", "last_off", "last_seen", "prev_since", "prev_last_off")
+TIME_KEYS = ("since", "last_on", "last_off", "last_seen", "checked", "prev_since", "prev_last_off", "started")
+
+
+class ConfigError(ValueError):
+    pass
 
 
 def log(msg: str) -> None:
@@ -148,7 +159,7 @@ def step(st: dict, up: int | None, gw_ok: bool, now: float, interval: float, off
 
     st: power (on|off|unknown), since, last_on (device power-on, epoch s), last_off (first silent
     probe of the last outage), last_seen (last answer), started (when the watch started), plus the
-    counters misses / gw_streak and the pre-outage values kept to undo a false "off"
+    counters misses / gw_streak / gw_down and the pre-outage values kept to undo a false "off"
     (prev_since / prev_last_off).
 
     Events: ("off", {off_at, at_start}), ("on", {boot, off_at}), ("unobserved", {boot}),
@@ -157,13 +168,14 @@ def step(st: dict, up: int | None, gw_ok: bool, now: float, interval: float, off
     out: list[tuple[str, dict]] = []
     if up is not None:
         boot = int(now - up)
-        st["misses"] = 0
+        st["misses"] = st["gw_down"] = 0
         st["gw_streak"] += 1  # the device answering means the LAN is up
         st["last_seen"] = int(now)
         if st["power"] == "off" and st["last_on"] == 0:
             # "Off" was declared before the device ever answered (watch started during an outage,
-            # or the device was slow to join Wi-Fi): only its boot time tells which.
-            if boot >= st["started"] - BOOT_JUMP_S:
+            # or the device was slow to join Wi-Fi): only its boot time tells which. (min: after a
+            # restart, the outage began before this run did.)
+            if boot >= min(st["started"], st["last_off"]) - BOOT_JUMP_S:
                 out.append(("on", {"boot": boot, "off_at": None}))
             else:
                 out.append(("false_alarm", {"boot": boot}))
@@ -174,7 +186,7 @@ def step(st: dict, up: int | None, gw_ok: bool, now: float, interval: float, off
                 # (Compared with the known boot, not last_off: a device slow to rejoin Wi-Fi can
                 # reboot BEFORE the watch declared "off" and still be a real power return.)
                 out.append(("false_alarm", {"boot": boot}))
-                st.update(power="on", since=st["prev_since"], last_off=st["prev_last_off"])
+                st.update(power="on", since=st["prev_since"], last_off=st["prev_last_off"], last_on=boot)
             else:
                 out.append(("on", {"boot": boot, "off_at": st["last_off"]}))
                 st.update(power="on", since=boot, last_on=boot)
@@ -186,7 +198,12 @@ def step(st: dict, up: int | None, gw_ok: bool, now: float, interval: float, off
             # (box offline during the router's reboot, or shorter than off_after probes).
             out.append(("unobserved", {"boot": boot}))
             st.update(since=boot, last_on=boot)
+        else:
+            # Same boot: follow the device clock's drift (~1 s/day is common), so it never adds
+            # up to a jump.
+            st["last_on"] = boot
     elif gw_ok:
+        st["gw_down"] = 0
         st["gw_streak"] += 1
         # Count misses only once the router has been back for off_after probes: after a router
         # reboot the device needs a while to rejoin Wi-Fi, and that is not an outage.
@@ -198,9 +215,19 @@ def step(st: dict, up: int | None, gw_ok: bool, now: float, interval: float, off
                 st.update(prev_since=st["since"], prev_last_off=st["last_off"])
                 st.update(power="off", since=off_at, last_off=off_at)
     else:
-        # The box cannot reach its own router: the device's silence says nothing.
-        st.update(misses=0, gw_streak=0)
+        # The box cannot reach its own router: the device's silence says nothing. One failed
+        # router probe is skipped; two in a row (a router reboot) restart the count and the grace.
+        st["gw_down"] += 1
+        if st["gw_down"] >= 2:
+            st.update(misses=0, gw_streak=0)
     return out
+
+
+def shift_times(st: dict, delta: float) -> None:
+    """Re-express stored times after the wall clock stepped by delta seconds."""
+    for k in TIME_KEYS:
+        if st.get(k):
+            st[k] = int(st[k] + delta)
 
 
 def describe(kind: str, ev: dict) -> str:
@@ -254,19 +281,29 @@ def message(kind: str, ev: dict, lang: str, tz: tzinfo | None, now: float, label
 
 class Telegram:
     """Posts in order from a background thread, retrying until Telegram is reachable again
-    (the network is often down right when power returns), so probing never blocks on it."""
+    (the network is often down right when power returns), so probing never blocks on it.
+    The outbox is persisted by the caller (pending()) and after every send (on_sent)."""
 
-    def __init__(self, token: str, chat_id: str):
+    def __init__(self, token: str, chat_id: str, outbox: list[str] | None = None,
+                 on_sent: Callable[[], None] | None = None):
         self.url = f"https://api.telegram.org/bot{token}/sendMessage"
         self.chat_id = chat_id
-        self.q: queue.Queue[str] = queue.Queue()
+        self.outbox = list(outbox or [])
+        self.cv = threading.Condition()
+        self.on_sent = on_sent or (lambda: None)
 
-    def start(self) -> "Telegram":
+    def start(self) -> Telegram:
         threading.Thread(target=self._run, daemon=True).start()
         return self
 
     def post(self, text: str) -> None:
-        self.q.put(text)
+        with self.cv:
+            self.outbox.append(text)
+            self.cv.notify()
+
+    def pending(self) -> list[str]:
+        with self.cv:
+            return list(self.outbox)
 
     def send(self, text: str) -> tuple[str, float]:
         """One attempt: ("sent" | "dropped" | "retry", seconds to wait before retrying). A permanent
@@ -278,81 +315,141 @@ class Telegram:
             return "sent", 0
         except urllib.error.HTTPError as e:
             # Never log e.url / the request: the URL carries the bot token.
-            try:
-                detail = json.loads(e.read() or b"{}")
-            except ValueError:
-                detail = {}
+            detail = error_detail(e)
             if e.code == 429:
-                return "retry", float(detail.get("parameters", {}).get("retry_after", 30))
+                try:
+                    return "retry", float(detail.get("parameters", {}).get("retry_after", 30))
+                except (AttributeError, TypeError, ValueError):
+                    return "retry", 30
             if 400 <= e.code < 500:
                 log(f"telegram: HTTP {e.code} {detail.get('description', '')} — message dropped")
                 return "dropped", 0
             log(f"telegram: HTTP {e.code} — will retry")
             return "retry", 30
-        except (OSError, ValueError) as e:
+        except Exception as e:  # noqa: BLE001 — anything else (garbage replies too) is transient
             log(f"telegram: {type(e).__name__} — will retry")
             return "retry", 30
 
     def _run(self) -> None:
         while True:
-            text = self.q.get()
-            delay = 10.0
-            while True:
-                status, wait = self.send(text)
-                if status != "retry":
-                    break
-                time.sleep(max(wait, delay))
-                delay = min(delay * 2, 120)
+            try:
+                with self.cv:
+                    while not self.outbox:
+                        self.cv.wait()
+                    text = self.outbox[0]
+                delay = 10.0
+                while True:
+                    status, wait = self.send(text)
+                    if status != "retry":
+                        break
+                    time.sleep(max(wait, delay))
+                    delay = min(delay * 2, 120)
+                with self.cv:
+                    self.outbox.pop(0)
+                self.on_sent()
+            except Exception as e:  # noqa: BLE001 — the worker must outlive any surprise
+                log(f"telegram: worker {type(e).__name__} — retrying in 30 s")
+                time.sleep(30)
 
 
-def load_state(path: str, st: dict) -> None:
+def error_detail(e: urllib.error.HTTPError) -> dict:
+    """Telegram's JSON error body as a dict; {} for anything else (empty, truncated, not JSON)."""
+    try:
+        detail = json.loads(e.read() or b"{}")
+    except Exception:  # noqa: BLE001
+        return {}
+    return detail if isinstance(detail, dict) else {}
+
+
+def load_state(path: str, st: dict) -> list[str]:
+    """Restore st from state.json (keys with the wrong type are ignored); returns unsent posts."""
     try:
         with open(path) as f:
             saved = json.load(f)
     except (OSError, ValueError):
-        return
-    st.update({k: saved[k] for k in PERSIST_KEYS if k in saved})
+        return []
+    if not isinstance(saved, dict):
+        return []
+    for k in PERSIST_KEYS:
+        v = saved.get(k)
+        if (v in ("on", "off", "unknown")) if k == "power" else (type(v) is int):
+            st[k] = v
+    outbox = saved.get("outbox")
+    return [m for m in outbox if isinstance(m, str)] if isinstance(outbox, list) else []
 
 
 def write_atomic(path: str, text: str) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         f.write(text)
+        f.flush()
+        os.fsync(f.fileno())  # this box's whole subject is power loss
     os.replace(tmp, path)
 
 
-def config() -> dict:
-    lang = os.environ.get("POWER_WATCH_LANG", "en")
-    tz_name = os.environ.get("POWER_WATCH_TZ", "")
+def config(env: dict | None = None) -> dict:
+    """Validated settings; raises ConfigError naming the bad variable (the unit then stops with
+    exit 2 instead of crash-looping)."""
+    env = os.environ if env is None else env
+
+    def get(name: str, default: str = "") -> str:
+        return env.get(name, "").strip() or default
+
+    def num(name: str, default: str, cast: Callable, minimum: float):
+        try:
+            v = cast(get(name, default))
+        except ValueError:
+            raise ConfigError(f"{name}={get(name)!r} is not a number (comments must be on their own line)") from None
+        if v < minimum:
+            raise ConfigError(f"{name} must be at least {minimum}")
+        return v
+
+    def ip(name: str) -> str:
+        v = get(name)
+        try:
+            return str(ipaddress.IPv4Address(v)) if v else ""
+        except ValueError:
+            raise ConfigError(f"{name}={v!r} is not an IPv4 address") from None
+
+    lang = get("POWER_WATCH_LANG", "en")
+    if lang not in MESSAGES:
+        raise ConfigError(f"POWER_WATCH_LANG={lang!r}: one of {', '.join(MESSAGES)}")
     tz = None
-    if tz_name:
+    if get("POWER_WATCH_TZ"):
         from zoneinfo import ZoneInfo
-        tz = ZoneInfo(tz_name)
+        try:
+            tz = ZoneInfo(get("POWER_WATCH_TZ"))
+        except (KeyError, ValueError, OSError):  # ZoneInfoNotFoundError is a KeyError
+            raise ConfigError(f"POWER_WATCH_TZ={get('POWER_WATCH_TZ')!r} is not a known time zone") from None
     return {
-        "device": os.environ.get("POWER_WATCH_DEVICE_IP", ""),
-        "token": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
-        "chat": os.environ.get("TELEGRAM_CHAT_ID", ""),
-        "lang": lang if lang in MESSAGES else "en",
+        "device": ip("POWER_WATCH_DEVICE_IP"),
+        "token": get("TELEGRAM_BOT_TOKEN"),
+        "chat": get("TELEGRAM_CHAT_ID"),
+        "lang": lang,
         "tz": tz,
-        "label": os.environ.get("POWER_WATCH_LABEL", ""),
-        "gateway": os.environ.get("POWER_WATCH_GATEWAY", ""),
-        "gw_port": int(os.environ.get("POWER_WATCH_GATEWAY_PORT", "53")),
-        "interval": float(os.environ.get("POWER_WATCH_INTERVAL_S", "15")),
-        "off_after": int(os.environ.get("POWER_WATCH_OFF_AFTER", "4")),
+        "label": get("POWER_WATCH_LABEL"),
+        "gateway": ip("POWER_WATCH_GATEWAY"),
+        "gw_port": num("POWER_WATCH_GATEWAY_PORT", "53", int, 1),
+        "interval": num("POWER_WATCH_INTERVAL_S", "15", float, 1),
+        "off_after": num("POWER_WATCH_OFF_AFTER", "4", int, 1),
     }
 
 
-def wait_for_clock(limit_s: float = 600) -> None:
+def wait_for_clock() -> None:
     """Boards without an RTC (Raspberry Pi) boot with a stale clock, and every boot time is
     now - uptime: probing before NTP would post a power return that never happened. Waits for
-    systemd-timesyncd's sync flag when timesyncd is in use; other setups should order the unit
-    after time-sync.target (systemd-time-wait-sync)."""
-    if not os.path.isdir("/run/systemd/timesync") or os.path.exists("/run/systemd/timesync/synchronized"):
+    systemd-timesyncd's sync flag when timesyncd is in use, however long it takes (no network
+    means no posts either); other setups should order the unit after time-sync.target
+    (systemd-time-wait-sync)."""
+    flag = "/run/systemd/timesync/synchronized"
+    if not os.path.isdir("/run/systemd/timesync") or os.path.exists(flag):
         return
-    log("power-watch: waiting for the clock to sync")
-    deadline = time.monotonic() + limit_s
-    while time.monotonic() < deadline and not os.path.exists("/run/systemd/timesync/synchronized"):
+    waited = 0
+    while not os.path.exists(flag):
+        if waited % 600 == 0:
+            log("power-watch: waiting for the clock to sync")
         time.sleep(5)
+        waited += 5
 
 
 def watch(cfg: dict) -> int:
@@ -360,21 +457,43 @@ def watch(cfg: dict) -> int:
         log("power-watch: POWER_WATCH_DEVICE_IP unset — nothing to watch")
         return 2  # the unit's RestartPreventExitStatus: a config error, not worth retrying
     wait_for_clock()
-    tg = Telegram(cfg["token"], cfg["chat"]).start() if cfg["token"] and cfg["chat"] else None
     interval, off_after = cfg["interval"], cfg["off_after"]
     run_dir, state_dir = os.environ.get("RUNTIME_DIRECTORY", ""), os.environ.get("STATE_DIRECTORY", "")
     persist_path = os.path.join(state_dir, "state.json") if state_dir else ""
 
     now = int(time.time())
     st = {"power": "unknown", "since": now, "last_on": 0, "last_off": 0, "last_seen": 0, "checked": 0,
-          "misses": 0, "gw_streak": 0, "prev_since": now, "prev_last_off": 0, "started": now}
-    if persist_path:
-        load_state(persist_path, st)
+          "misses": 0, "gw_streak": 0, "gw_down": 0, "prev_since": now, "prev_last_off": 0, "started": now}
+    outbox = load_state(persist_path, st) if persist_path else []
+    lock = threading.Lock()
+    tg: Telegram | None = None
+
+    def persist() -> None:
+        if not persist_path:
+            return
+        data = {k: st[k] for k in PERSIST_KEYS}
+        if tg:
+            data["outbox"] = tg.pending()
+        with lock:
+            try:
+                write_atomic(persist_path, json.dumps(data))
+            except OSError as e:  # keep watching: dying here would re-post the same event on restart
+                log(f"power-watch: cannot save state: {e}")
+
+    if cfg["token"] and cfg["chat"]:
+        tg = Telegram(cfg["token"], cfg["chat"], outbox, on_sent=persist).start()
     log(f"power-watch: device {cfg['device']}, gateway {cfg['gateway'] or '(default route)'}:{cfg['gw_port']}, "
         f"every {interval:g}s, off after {off_after} misses, telegram {'on' if tg else 'off'}, "
-        f"starting from power={st['power']}")
+        f"starting from power={st['power']}" + (f", {len(outbox)} unsent post(s)" if outbox else ""))
+    clock_offset = time.time() - time.monotonic()
     while True:
-        t0 = time.time()
+        t0, m0 = time.time(), time.monotonic()
+        step_s = (t0 - m0) - clock_offset
+        clock_offset = t0 - m0
+        if abs(step_s) > CLOCK_STEP_S:
+            log(f"power-watch: wall clock stepped {step_s:+.0f} s — shifting stored times")
+            shift_times(st, step_s)
+            persist()
         up = device_uptime(cfg["device"])
         gw_ok = True
         if up is None:
@@ -387,12 +506,15 @@ def watch(cfg: dict) -> int:
             text = message(kind, ev, cfg["lang"], cfg["tz"], t0, cfg["label"])
             if tg and text:
                 tg.post(text)
-        if events and persist_path:
-            write_atomic(persist_path, json.dumps({k: st[k] for k in PERSIST_KEYS}))
+        if events:
+            persist()
         st["checked"] = int(t0)
         if run_dir:
-            write_atomic(os.path.join(run_dir, "state"), "".join(f"{k}={st[k]}\n" for k in PUBLIC_KEYS))
-        time.sleep(max(0.0, interval - (time.time() - t0)))
+            try:
+                write_atomic(os.path.join(run_dir, "state"), "".join(f"{k}={st[k]}\n" for k in PUBLIC_KEYS))
+            except OSError as e:
+                log(f"power-watch: cannot write {run_dir}/state: {e}")
+        time.sleep(max(0.0, interval - (time.monotonic() - m0)))
 
 
 def arp_table() -> dict[str, str]:
@@ -463,7 +585,11 @@ def main() -> int:
         return scan(args.scan)
     if args.probe:
         return probe(args.probe)
-    cfg = config()
+    try:
+        cfg = config()
+    except ConfigError as e:
+        log(f"power-watch: config error: {e}")
+        return 2
     if args.test_notify:
         return test_notify(cfg)
     return watch(cfg)
