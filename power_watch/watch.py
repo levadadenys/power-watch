@@ -1,0 +1,153 @@
+"""The service: probe every interval, feed the state machine, post and persist what it reports."""
+
+from __future__ import annotations
+
+import logging
+import os
+import threading
+import time
+
+from power_watch import probe, store
+from power_watch.bot import Commands
+from power_watch.config import Config
+from power_watch.messages import message, status_text
+from power_watch.state import CLOCK_STEP_S, describe, new_state, shift_times, step
+from power_watch.telegram import Telegram
+
+log = logging.getLogger(__name__)
+
+
+def wait_for_clock() -> None:
+    """Boards without an RTC (Raspberry Pi) boot with a stale clock, and every boot time is
+    now - uptime: probing before NTP would post a power return that never happened. Waits for
+    systemd-timesyncd's sync flag when timesyncd is in use, however long it takes (no network
+    means no posts either); other setups should order the unit after time-sync.target
+    (systemd-time-wait-sync)."""
+    flag = "/run/systemd/timesync/synchronized"
+    if not os.path.isdir("/run/systemd/timesync") or os.path.exists(flag):
+        return
+    waited = 0
+    while not os.path.exists(flag):
+        if waited % 600 == 0:
+            log.info("power-watch: waiting for the clock to sync")
+        time.sleep(5)
+        waited += 5
+
+
+def load_purifier(cfg: Config) -> tuple | None:
+    """(purifier module, Device) when one is configured and loadable. Optional by design: without
+    a working python3-cryptography the power watch still runs, minus the readings."""
+    if not (cfg.purifier_ip and cfg.purifier_token):
+        if cfg.purifier_ip or cfg.purifier_token:
+            log.warning("power-watch: purifier needs both POWER_WATCH_PURIFIER_IP and POWER_WATCH_PURIFIER_TOKEN")
+        return None
+    try:
+        from power_watch import purifier
+    except Exception as e:  # noqa: BLE001 — a missing or broken cryptography must never stop the watch
+        if isinstance(e, ModuleNotFoundError) and (e.name or "").startswith("cryptography"):
+            log.warning("power-watch: purifier readings off — install python3-cryptography")
+        else:
+            log.warning("power-watch: purifier readings off — %s: %s", type(e).__name__, e)
+        return None
+    return purifier, purifier.Device(cfg.purifier_ip, cfg.purifier_token)
+
+
+class Watch:
+    def __init__(self, cfg: Config, run_dir: str = "", state_dir: str = ""):
+        self.cfg = cfg
+        self.live_path = os.path.join(run_dir, "state") if run_dir else ""
+        self.persist_path = os.path.join(state_dir, "state.json") if state_dir else ""
+        self.st = new_state(int(time.time()))
+        outbox = store.load_state(self.persist_path, self.st) if self.persist_path else []
+        self.lock = threading.Lock()
+        self.tg = Telegram(cfg.token, cfg.chat, outbox, on_sent=self.persist) if cfg.token and cfg.chat else None
+        self.purifier = load_purifier(cfg)
+        if self.purifier and not cfg.token:
+            log.warning(
+                "power-watch: a purifier is set, but its readings only appear in the bot's /status "
+                "(no TELEGRAM_BOT_TOKEN)"
+            )
+
+    def persist(self) -> None:
+        if not self.persist_path:
+            return
+        with self.lock:
+            try:
+                store.save_state(self.persist_path, self.st, self.tg.pending() if self.tg else [])
+            except OSError as e:  # keep watching: dying here would re-post the same event on restart
+                log.error("power-watch: cannot save state: %s", e)
+
+    def status(self) -> str:
+        """The /status reply: the power line, then the purifier's lines when one is set."""
+        text = status_text(self.st, self.cfg.lang, self.cfg.tz, time.time(), 3 * self.cfg.interval)
+        if not self.purifier:
+            return text
+        module, dev = self.purifier
+        return "\n".join([text, *module.status(dev, self.cfg.lang)])
+
+    def probe_once(self, now: float) -> None:
+        cfg = self.cfg
+        up = probe.device_uptime(cfg.device)
+        gw_ok = True
+        if up is None:
+            # Re-resolved every probe: at boot the default route may not exist yet.
+            gateway = cfg.gateway or probe.default_gateway()
+            gw_ok = bool(gateway) and probe.gateway_up(gateway, cfg.gw_port)
+        events = step(self.st, up, gw_ok, now, cfg.interval, cfg.off_after)
+        for kind, ev in events:
+            log.info(describe(kind, ev))
+            text = message(kind, ev, cfg.lang, cfg.tz, now, cfg.label)
+            if self.tg and text:
+                self.tg.post(text)
+        if events:
+            self.persist()
+        self.st["checked"] = int(now)
+        if self.live_path:
+            try:
+                store.write_live(self.live_path, self.st)
+            except OSError as e:
+                log.error("power-watch: cannot write %s: %s", self.live_path, e)
+
+    def run(self) -> None:
+        cfg = self.cfg
+        if self.tg:
+            self.tg.start()
+        if cfg.token:
+            # Listen even with nobody allowed yet: an unknown user's message logs the id to allow.
+            Commands(self.tg or Telegram(cfg.token, ""), cfg.allowed, self.status, cfg.lang).start()
+        pending = len(self.tg.pending()) if self.tg else 0
+        log.info(
+            "power-watch: device %s, gateway %s:%s, every %gs, off after %s misses, channel %s, "
+            "bot %s (%d user(s)), purifier %s, starting from power=%s%s",
+            cfg.device,
+            cfg.gateway or "(default route)",
+            cfg.gw_port,
+            cfg.interval,
+            cfg.off_after,
+            "on" if self.tg else "off",
+            "on" if cfg.token else "off",
+            len(cfg.allowed),
+            cfg.purifier_ip if self.purifier else "off",
+            self.st["power"],
+            f", {pending} unsent post(s)" if pending else "",
+        )
+        clock_offset = time.time() - time.monotonic()
+        while True:
+            t0, m0 = time.time(), time.monotonic()
+            jump = (t0 - m0) - clock_offset
+            clock_offset = t0 - m0
+            if abs(jump) > CLOCK_STEP_S:
+                log.info("power-watch: wall clock stepped %+.0f s — shifting stored times", jump)
+                shift_times(self.st, jump)
+                self.persist()
+            self.probe_once(t0)
+            time.sleep(max(0.0, cfg.interval - (time.monotonic() - m0)))
+
+
+def watch(cfg: Config) -> int:
+    if not cfg.device:
+        log.error("power-watch: POWER_WATCH_DEVICE_IP unset — nothing to watch")
+        return 2  # the unit's RestartPreventExitStatus: a config error, not worth retrying
+    wait_for_clock()
+    Watch(cfg, os.environ.get("RUNTIME_DIRECTORY", ""), os.environ.get("STATE_DIRECTORY", "")).run()
+    return 0
