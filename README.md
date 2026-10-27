@@ -51,58 +51,45 @@ Plain Python (standard library only), no cloud, no device token. The optional ai
 
 ## Setup
 
-**1. Get the code onto the box**
-
-```sh
-git clone https://github.com/levadadenys/power-watch && cd power-watch
-python3 -m unittest discover -s tests   # optional
-```
-
-**2. Find the device**
-
-```sh
-python3 power_watch.py --scan 192.168.0.0/24
-# 192.168.0.150    mac 78:11:dc:xx:xx:xx  id  123456789  up since 2026-10-27T08:15:02Z
-```
-
-To be sure which one it is, unplug it and scan again. In the router's settings, reserve that
-address for its MAC (DHCP reservation / static lease) so it never changes. Check a single device
-with `--probe 192.168.0.150`.
-
-Also check that the router answers the TCP port power-watch probes (53 by default). A refusal is
-fine; a timeout is not:
-
-```sh
-nc -vz 192.168.0.1 53     # "succeeded" or "refused" = good; set POWER_WATCH_GATEWAY_PORT otherwise
-```
-
-**3. Telegram**
+**1. Telegram** (skip it if the journal is enough)
 
 1. In Telegram, message [@BotFather](https://t.me/BotFather) → `/newbot` and copy the token.
 2. Create a channel. Make it public with an @name, or private and share an invite link.
 3. Channel settings → Administrators → add your bot, with permission to post messages.
-4. The chat id is `@channelname` for a public channel. For a private one, post anything in the
-   channel after adding the bot, then run `power-watch --find-chats` with the token set (step 5
-   shows how to run it with the env file; stop the service first if it's running) and copy the
-   `-100…` id.
+4. For a public channel the chat id is `@channelname`. For a private one, post anything in the
+   channel after adding the bot; the installer's last step shows how to find its `-100…` id.
 
-**4. Install**
+**2. Install**
 
 ```sh
-sudo install -d /opt/power-watch && sudo install -m 644 purifier.py /opt/power-watch/
-sudo install -m 755 power_watch.py /opt/power-watch/
-sudo ln -sf /opt/power-watch/power_watch.py /usr/local/bin/power-watch
-sudo install -m 644 systemd/power-watch.service /etc/systemd/system/
-sudo install -m 600 power-watch.env.example /etc/power-watch.env
-sudoedit /etc/power-watch.env          # device IP, token, chat id, language
-sudo systemctl daemon-reload && sudo systemctl enable --now power-watch.service
+git clone https://github.com/levadadenys/power-watch && cd power-watch
+sudo ./install.sh
 ```
 
-**Upgrading:** run only the first three lines (they also replace an older single-file
-`/usr/local/bin/power-watch` with the link), then `sudo systemctl restart power-watch`. Don't
-rerun the `power-watch.env.example` line: it would overwrite your settings.
+The installer builds one self-contained executable (`/usr/local/bin/power-watch`, Python's
+standard library only), installs the systemd unit, and on the first run:
 
-**5. Check**
+- lists the Xiaomi devices on your network. Pick the one plugged into mains power, NOT into the
+  UPS. Unplug it and run `power-watch --scan 192.168.0.0/24` again if you're unsure which it is.
+- asks for the bot token, the channel, who may ask the bot `/status`, and the language, and writes
+  them to `/etc/power-watch.env` (mode 600).
+
+Then it starts the service. Run it again after a `git pull` to upgrade: your settings are kept.
+`sudo ./install.sh --uninstall` removes it.
+
+Two things worth doing once:
+
+- In the router's settings, reserve the device's address for its MAC (DHCP reservation / static
+  lease) so it never changes.
+- Check that the router answers the TCP port power-watch probes (53 by default). A refusal is
+  fine; a timeout is not: `nc -vz 192.168.0.1 53` should say "succeeded" or "refused". Otherwise
+  set `POWER_WATCH_GATEWAY_PORT`.
+
+**Private channel id:** `sudo systemctl stop power-watch`, then run `power-watch --find-chats` the
+way the test below runs `--test-notify`, put the `-100…` id in `TELEGRAM_CHAT_ID`, and start the
+service again. (While it runs, the service is the bot's only reader of its updates.)
+
+**3. Check**
 
 ```sh
 # a test post in the channel, with the env file read exactly as the service reads it:
@@ -143,10 +130,10 @@ Reading a Xiaomi purifier needs more than the power probe does: its **token** (3
 [Xiaomi Cloud Tokens Extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor)
 prints it after a Mi account login) and `python3-cryptography` (`sudo apt install
 python3-cryptography`). Set `POWER_WATCH_PURIFIER_IP` and `POWER_WATCH_PURIFIER_TOKEN`, then check
-with `power-watch --purifier` (run it like the test post in step 5). Re-adding the device in Mi Home
+with `power-watch --purifier` (run it like the test post in step 3). Re-adding the device in Mi Home
 changes its token.
 
-Supported models (property maps in `purifier.py`, from [miot-spec](https://home.miot-spec.com)):
+Supported models (property maps in `power_watch/purifier.py`, from [miot-spec](https://home.miot-spec.com)):
 
 | Model | Readings |
 |---|---|
@@ -180,7 +167,7 @@ power watch.
 | `POWER_WATCH_OFF_AFTER` | `4` | missed probes before "off", and the grace after a router outage |
 
 Messages are in English or Ukrainian. To add a language, add a block to `MESSAGES` in
-`power_watch.py` (the tests check that every language has every key).
+`power_watch/messages.py` (the tests check that every language has every key).
 
 ## Live state for other tools
 
