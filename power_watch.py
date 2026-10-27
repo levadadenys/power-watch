@@ -434,14 +434,22 @@ class Commands:
 
     def handle(self, updates: list, now: float) -> None:
         """One reply per chat per batch, for messages under 10 min old: a backlog after an
-        outage or restart is answered once, with the current state."""
+        outage or restart is answered once, with the current state. The status itself is built
+        once per batch too: with a slow or offline purifier each build can take seconds."""
         replies: dict[int, str] = {}
+        built: list[str] = []
+
+        def status_once() -> str:
+            if not built:
+                built.append(self.status())
+            return built[0]
+
         for update in updates:
             msg = update.get("message")
             if isinstance(msg, dict) and now - msg.get("date", now) > 600:
                 continue
             try:
-                action = reply_for(update, self.allowed, self.status, self.lang)
+                action = reply_for(update, self.allowed, status_once, self.lang)
             except Exception as e:  # noqa: BLE001
                 log(f"bot: cannot build a reply: {type(e).__name__}")
                 continue
@@ -619,18 +627,24 @@ def watch(cfg: dict) -> int:
 
     if cfg["token"] and cfg["chat"]:
         tg = Telegram(cfg["token"], cfg["chat"], outbox, on_sent=persist).start()
+    purifier = load_purifier(cfg)
+    if purifier and not cfg["token"]:
+        log("power-watch: a purifier is set, but its readings only appear in the bot's /status (no TELEGRAM_BOT_TOKEN)")
     if cfg["token"]:
-        purifier = load_purifier(cfg)
 
         def status() -> str:
             text = status_text(st, cfg["lang"], cfg["tz"], time.time(), 3 * interval)
-            return "\n".join([text, *purifier[0].status(purifier[1], cfg["lang"])]) if purifier else text
+            if not purifier:
+                return text
+            module, dev = purifier
+            return "\n".join([text, *module.status(dev, cfg["lang"], log)])
 
         # Listen even with nobody allowed yet: an unknown user's message logs the id to allow.
         Commands(tg or Telegram(cfg["token"], ""), cfg["allowed"], status, cfg["lang"]).start()
     log(f"power-watch: device {cfg['device']}, gateway {cfg['gateway'] or '(default route)'}:{cfg['gw_port']}, "
         f"every {interval:g}s, off after {off_after} misses, channel {'on' if tg else 'off'}, "
         f"bot {'on' if cfg['token'] else 'off'} ({len(cfg['allowed'])} user(s)), "
+        f"purifier {cfg['purifier_ip'] if purifier else 'off'}, "
         f"starting from power={st['power']}" + (f", {len(outbox)} unsent post(s)" if outbox else ""))
     clock_offset = time.time() - time.monotonic()
     while True:
@@ -673,8 +687,11 @@ def load_purifier(cfg: dict) -> tuple | None:
         return None
     try:
         import purifier
-    except ImportError as e:
-        log(f"power-watch: purifier readings off — {e} (install python3-cryptography)")
+    except ModuleNotFoundError as e:
+        if e.name == "purifier":
+            log("power-watch: purifier readings off — purifier.py is not next to power_watch.py")
+        else:
+            log(f"power-watch: purifier readings off — no module {e.name!r} (install python3-cryptography)")
         return None
     return purifier, purifier.Device(cfg["purifier_ip"], cfg["purifier_token"])
 
@@ -687,11 +704,11 @@ def read_purifier(cfg: dict) -> int:
     module, dev = loaded
     try:
         values = dev.read()
-    except module.MiioError as e:
-        log(f"{cfg['purifier_ip']}: {e}")
+    except module.UnsupportedModel as e:
+        log(f"{cfg['purifier_ip']}: model {e.model} has no property map in purifier.py yet")
         return 1
-    except KeyError:
-        log(f"{cfg['purifier_ip']}: model {dev.model} has no property map in purifier.py yet")
+    except Exception as e:  # noqa: BLE001 — a diagnostic command reports, never tracebacks
+        log(f"{cfg['purifier_ip']}: {type(e).__name__}: {e}")
         return 1
     log(f"{cfg['purifier_ip']}: {dev.model} {values}")
     for line in module.status_lines(values, cfg["lang"]):
