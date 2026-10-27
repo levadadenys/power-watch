@@ -24,7 +24,8 @@ class Watch:
     def __init__(self, **saved):
         self.now = T0
         self.st = {'power': 'unknown', 'since': T0, 'last_on': 0, 'last_off': 0, 'last_seen': 0, 'checked': 0,
-                   'misses': 0, 'gw_streak': 0, 'prev_since': T0, 'prev_last_off': 0, 'started': T0, **saved}
+                   'misses': 0, 'gw_streak': 0, 'gw_down': 0, 'prev_since': T0, 'prev_last_off': 0, 'started': T0,
+                   **saved}
         self.events = []
 
     def probe(self, boot=None, gw_ok=True, n=1):
@@ -143,6 +144,34 @@ class StateMachine(unittest.TestCase):
         self.assertEqual(w.events, [('on', {'boot': back, 'off_at': off_at})])
 
 
+    def test_device_clock_drift_never_adds_up_to_a_reboot(self):
+        # A slow device clock moves the computed boot time later every answer (here 1 s per
+        # probe: days of real drift); compared with the first sighting it would cross BOOT_JUMP_S.
+        w = Watch()
+        for k in range(200):
+            w.device(boot=DEVICE_BOOT + k)
+        self.assertEqual(w.kinds(), ['baseline'])
+
+    def test_one_failed_router_probe_does_not_restart_the_count(self):
+        w = Watch().device(n=10).silent(n=2).router_down().silent(n=2)
+        self.assertEqual(w.kinds()[-1], 'off')
+
+    def test_restart_after_an_outage_seen_only_from_the_start(self):
+        # Run 1 started during an outage (last_on never known); power came back while the watch
+        # was down, before run 2 started: a real return, not a false alarm.
+        off_at = T0 - 3_600
+        w = Watch(power='off', since=off_at, last_on=0, last_off=off_at)
+        back = T0 - 600
+        w.device(boot=back)
+        self.assertEqual(w.events, [('on', {'boot': back, 'off_at': None})])
+
+    def test_clock_step_shifts_stored_times(self):
+        st = {'since': 100, 'last_on': 50, 'last_off': 0, 'last_seen': 120, 'checked': 120,
+              'prev_since': 10, 'prev_last_off': 0, 'started': 100}
+        pw.shift_times(st, 3_600)
+        self.assertEqual((st['since'], st['last_on'], st['last_off'], st['started']), (3_700, 3_650, 0, 3_700))
+
+
 class Messages(unittest.TestCase):
     now = datetime(2026, 10, 27, 18, 0, tzinfo=KYIV).timestamp()
 
@@ -189,15 +218,86 @@ class Plumbing(unittest.TestCase):
         self.assertIsNone(pw.parse_hello(b'\x00' * 32))
         self.assertIsNone(pw.parse_hello(reply[:10]))
 
-    def test_persisted_state_round_trip_ignores_unknown_keys(self):
+    def test_persisted_state_round_trip_ignores_unknown_and_mistyped_keys(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'state.json')
-            pw.write_atomic(path, json.dumps({'power': 'off', 'last_off': 5, 'misses': 99}))
-            st = {'power': 'unknown', 'last_off': 0, 'misses': 0}
-            pw.load_state(path, st)
-            self.assertEqual(st, {'power': 'off', 'last_off': 5, 'misses': 0})
-            pw.load_state(os.path.join(d, 'missing.json'), st)  # no file: unchanged, no error
+            pw.write_atomic(path, json.dumps({'power': 'off', 'last_off': 5, 'last_on': '7', 'misses': 99,
+                                              'outbox': ['a', 3, 'b']}))
+            st = {'power': 'unknown', 'last_off': 0, 'last_on': 0, 'misses': 0}
+            self.assertEqual(pw.load_state(path, st), ['a', 'b'])
+            self.assertEqual(st, {'power': 'off', 'last_off': 5, 'last_on': 0, 'misses': 0})
+            self.assertEqual(pw.load_state(os.path.join(d, 'missing.json'), st), [])  # no file: no error
+            pw.write_atomic(path, '[1, 2]')
+            self.assertEqual(pw.load_state(path, st), [])
             self.assertEqual(st['power'], 'off')
+
+
+class Config(unittest.TestCase):
+    def test_defaults(self):
+        cfg = pw.config({'POWER_WATCH_DEVICE_IP': '192.168.0.150'})
+        self.assertEqual((cfg['device'], cfg['lang'], cfg['interval'], cfg['off_after'], cfg['gw_port']),
+                         ('192.168.0.150', 'en', 15.0, 4, 53))
+
+    def test_bad_values_are_config_errors(self):
+        for env in ({'POWER_WATCH_OFF_AFTER': '4   # misses'}, {'POWER_WATCH_OFF_AFTER': '0'},
+                    {'POWER_WATCH_INTERVAL_S': '0'}, {'POWER_WATCH_TZ': 'Europe/Kyiv  # x'},
+                    {'POWER_WATCH_TZ': '../etc'}, {'POWER_WATCH_LANG': 'de'},
+                    {'POWER_WATCH_DEVICE_IP': '192.168.0.150 # lamp'}, {'POWER_WATCH_GATEWAY': 'router'}):
+            with self.subTest(env=env), self.assertRaises(pw.ConfigError):
+                pw.config(env)
+
+
+class FakeHTTPError(pw.urllib.error.HTTPError):
+    def __init__(self, code, body):
+        super().__init__('https://example.invalid', code, 'x', {}, None)
+        self.body = body
+
+    def read(self, *_):
+        if isinstance(self.body, Exception):
+            raise self.body
+        return self.body
+
+
+class TelegramSender(unittest.TestCase):
+    def send_with(self, effect):
+        def fake_urlopen(*_a, **_k):
+            raise effect
+        orig, pw.urllib.request.urlopen = pw.urllib.request.urlopen, fake_urlopen
+        try:
+            return pw.Telegram('T', '@c').send('hi')
+        finally:
+            pw.urllib.request.urlopen = orig
+
+    def test_errors_are_retried_or_dropped_never_raised(self):
+        import http.client
+        self.assertEqual(self.send_with(http.client.BadStatusLine('x')), ('retry', 30))
+        self.assertEqual(self.send_with(TimeoutError()), ('retry', 30))
+        self.assertEqual(self.send_with(FakeHTTPError(502, http.client.IncompleteRead(b''))), ('retry', 30))
+        self.assertEqual(self.send_with(FakeHTTPError(429, b'{"parameters": {"retry_after": 7}}')), ('retry', 7.0))
+        self.assertEqual(self.send_with(FakeHTTPError(429, b'[]')), ('retry', 30))
+        self.assertEqual(self.send_with(FakeHTTPError(400, b'{"description": "chat not found"}')), ('dropped', 0))
+
+    def test_worker_survives_a_crash_and_sends_in_order(self):
+        import threading
+        sent, done = [], threading.Event()
+        tg = pw.Telegram('T', '@c', outbox=['first'], on_sent=lambda: len(sent) == 2 and done.set())
+        calls = iter([RuntimeError('boom')])
+
+        def send(text):
+            err = next(calls, None)
+            if err:
+                raise err
+            sent.append(text)
+            return 'sent', 0
+        tg.send = send
+        orig_sleep, pw.time.sleep = pw.time.sleep, lambda _s: None
+        try:
+            tg.start()
+            tg.post('second')
+            self.assertTrue(done.wait(5))
+        finally:
+            pw.time.sleep = orig_sleep
+        self.assertEqual((sent, tg.pending()), (['first', 'second'], []))
 
 
 if __name__ == '__main__':
