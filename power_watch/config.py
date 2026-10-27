@@ -32,6 +32,8 @@ class Config:
     gw_port: int = 53
     interval: float = 15
     off_after: int = 4
+    run_dir: str = ""  # systemd's RUNTIME_DIRECTORY: the live state file goes here
+    state_dir: str = ""  # systemd's STATE_DIRECTORY: state.json goes here
 
 
 def from_env(env: Mapping[str, str] | None = None) -> Config:
@@ -40,9 +42,9 @@ def from_env(env: Mapping[str, str] | None = None) -> Config:
     def get(name: str, default: str = "") -> str:
         return environ.get(name, "").strip() or default
 
-    def num(name: str, default: str, cast: Callable, minimum: float):
+    def num(name: str, default: float, cast: Callable, minimum: float):
         try:
-            v = cast(get(name, default))
+            v = cast(get(name, str(default)))
         except ValueError:
             raise ConfigError(f"{name}={get(name)!r} is not a number (comments must be on their own line)") from None
         if v < minimum:
@@ -63,7 +65,7 @@ def from_env(env: Mapping[str, str] | None = None) -> Config:
     purifier_token = get("POWER_WATCH_PURIFIER_TOKEN").lower()
     if purifier_token and (len(purifier_token) != 32 or any(c not in "0123456789abcdef" for c in purifier_token)):
         raise ConfigError("POWER_WATCH_PURIFIER_TOKEN must be 32 hex digits")
-    lang = get("POWER_WATCH_LANG", "en")
+    lang = get("POWER_WATCH_LANG", Config.lang)
     if lang not in MESSAGES:
         raise ConfigError(f"POWER_WATCH_LANG={lang!r}: one of {', '.join(MESSAGES)}")
     tz = None
@@ -85,7 +87,9 @@ def from_env(env: Mapping[str, str] | None = None) -> Config:
         purifier_ip=ip("POWER_WATCH_PURIFIER_IP"),
         purifier_token=purifier_token,
         gateway=ip("POWER_WATCH_GATEWAY"),
-        gw_port=num("POWER_WATCH_GATEWAY_PORT", "53", int, 1),
-        interval=num("POWER_WATCH_INTERVAL_S", "15", float, 1),
-        off_after=num("POWER_WATCH_OFF_AFTER", "4", int, 1),
+        gw_port=num("POWER_WATCH_GATEWAY_PORT", Config.gw_port, int, 1),
+        interval=num("POWER_WATCH_INTERVAL_S", Config.interval, float, 1),
+        off_after=num("POWER_WATCH_OFF_AFTER", Config.off_after, int, 1),
+        run_dir=get("RUNTIME_DIRECTORY"),
+        state_dir=get("STATE_DIRECTORY"),
     )
