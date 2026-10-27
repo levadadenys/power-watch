@@ -33,7 +33,8 @@ class ChannelPosts(unittest.TestCase):
         self.assertIsNone(message("baseline", {"boot": 0}, "en", KYIV, NOW))
 
     def test_every_language_has_every_key(self):
-        self.assertEqual(set(MESSAGES["en"]), set(MESSAGES["uk"]))
+        for lang, msgs in MESSAGES.items():
+            self.assertEqual(set(msgs), set(MESSAGES["en"]), lang)
 
 
 class StatusLine(unittest.TestCase):
