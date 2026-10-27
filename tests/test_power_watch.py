@@ -232,6 +232,15 @@ class Plumbing(unittest.TestCase):
             self.assertEqual(st['power'], 'off')
 
 
+    def test_chats_from_updates(self):
+        updates = {'ok': True, 'result': [
+            {'update_id': 1, 'my_chat_member': {'chat': {'id': -1001234, 'type': 'channel', 'title': 'Світло'}}},
+            {'update_id': 2, 'channel_post': {'chat': {'id': -1001234, 'type': 'channel', 'title': 'Світло'}}},
+            {'update_id': 3, 'message': {'chat': {'id': 42, 'type': 'private', 'username': 'someone'}}},
+            {'update_id': 4, 'edited_message': {}}]}
+        self.assertEqual(pw.chats_from_updates(updates), {-1001234: 'channel Світло', 42: 'private someone'})
+
+
 class Config(unittest.TestCase):
     def test_defaults(self):
         cfg = pw.config({'POWER_WATCH_DEVICE_IP': '192.168.0.150'})
