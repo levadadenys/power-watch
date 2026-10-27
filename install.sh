@@ -66,7 +66,7 @@ configure() {
 	read -r -s -p "Bot token (input hidden): " token </dev/tty
 	echo
 	if [ -n "$token" ]; then
-		echo "Channel: @name for a public one; for a private one, leave empty and run 'power-watch --find-chats' later."
+		echo "Channel: @name for a public one; for a private one, leave it empty (README FAQ: 'private channel's id')."
 		ask chat "Channel"
 		echo "Telegram user ids allowed to ask the bot /status (comma-separated; empty = nobody yet)."
 		ask users "Allowed user ids"
