@@ -687,11 +687,14 @@ def load_purifier(cfg: dict) -> tuple | None:
         return None
     try:
         import purifier
-    except ModuleNotFoundError as e:
-        if e.name == "purifier":
+    except ImportError as e:  # also a broken (not just missing) cryptography: never stop the watch
+        name = getattr(e, "name", None)
+        if name == "purifier":
             log("power-watch: purifier readings off — purifier.py is not next to power_watch.py")
+        elif isinstance(e, ModuleNotFoundError):
+            log(f"power-watch: purifier readings off — no module {name!r} (install python3-cryptography)")
         else:
-            log(f"power-watch: purifier readings off — no module {e.name!r} (install python3-cryptography)")
+            log(f"power-watch: purifier readings off — {type(e).__name__}: {e} (reinstall python3-cryptography?)")
         return None
     return purifier, purifier.Device(cfg["purifier_ip"], cfg["purifier_token"])
 
