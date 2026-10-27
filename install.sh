@@ -28,6 +28,8 @@ build() { # build FILE: zip the package with a __main__ that keeps the exit code
 	cp -R "$SRC/power_watch" "$stage/"
 	find "$stage" -name __pycache__ -prune -exec rm -rf {} +
 	printf 'import sys\nfrom power_watch.cli import main\nsys.exit(main())\n' >"$stage/__main__.py"
+	# Reproducible: zipapp already sorts the entries; fix the timestamps too (zip starts in 1980).
+	find "$stage" -exec touch -t 198001010000 {} +
 	python3 -m zipapp "$stage" -o "$out" -p "/usr/bin/env python3"
 	chmod 755 "$out"
 }
@@ -48,7 +50,8 @@ ask() { # ask VAR "question" [default]
 configure() {
 	say "First install: a few settings (all can be changed later in $ENV_FILE)"
 	local net device token chat users lang
-	net=$(ip -4 route show scope link 2>/dev/null | awk '$1 ~ /\// && $1 !~ /^169\.254/ { print $1; exit }')
+	# Optional help: without iproute2 (or a route) the scan is skipped and the IP is typed in.
+	net=$(ip -4 route show scope link 2>/dev/null | awk '$1 ~ /\// && $1 !~ /^169\.254/ { print $1; exit }') || net=""
 	if [ -n "$net" ]; then
 		say "Xiaomi (miIO) devices on $net:"
 		"$BIN" --scan "$net" || true
@@ -105,10 +108,14 @@ python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))' || die "Python 3.9 
 say "Building and installing $BIN"
 tmp=$(mktemp)
 build "$tmp"
-if [ -L "$BIN" ] || [ -d "$LEGACY_DIR" ]; then
+# Only when the old files are really there: a checkout or other data under /opt is never touched.
+if [ -L "$BIN" ] || [ -e "$LEGACY_DIR/power_watch.py" ] || [ -e "$LEGACY_DIR/purifier.py" ]; then
 	say "Replacing the old layout ($LEGACY_DIR + symlink)"
 	rm -f "$BIN"
-	rm -rf "$LEGACY_DIR"
+	# Only our own files: anything else someone put there stays (and so does the directory).
+	rm -f "$LEGACY_DIR/power_watch.py" "$LEGACY_DIR/purifier.py"
+	rm -rf "$LEGACY_DIR/__pycache__"
+	rmdir "$LEGACY_DIR" 2>/dev/null || say "Left $LEGACY_DIR in place: it holds files that aren't power-watch's"
 fi
 install -m 755 "$tmp" "$BIN"
 rm -f "$tmp"
