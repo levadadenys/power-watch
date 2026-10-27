@@ -22,6 +22,8 @@ One Python file, no dependencies, no cloud, no device token.
   `now − uptime` is the exact moment it last powered on.
 - **Outage.** The device stops answering (4 probes in a row, about a minute) while the router still
   answers. If the router itself is unreachable, the device's silence means nothing and is ignored.
+  After the router has been unreachable, or right after a start, the count begins only once the
+  router has answered for a minute, so detection then takes about 2 minutes.
 - **Return.** The device answers again with a new power-on time. That time is the moment power came
   back, even if the network was down at that moment. Many routers reboot when mains returns and
   the UPS switches back, so the "power is back" post usually goes out a couple of minutes late
@@ -29,12 +31,15 @@ One Python file, no dependencies, no cloud, no device token.
 - **No false alarms from Wi-Fi.** If the device comes back *without* having rebooted, power never
   went out, and the channel gets a correction. After the router reboots, the device gets a minute
   of grace to rejoin Wi-Fi before its silence counts.
-- **Restarts.** The power state survives restarts (`/var/lib/power-watch/state.json`, written only
-  on changes), so a restart neither repeats nor loses an outage.
+- **Restarts.** The power state and any posts not yet sent survive restarts
+  (`/var/lib/power-watch/state.json`, written only on changes), so a restart neither repeats nor
+  loses an outage.
+- **Clock.** Times come from the box's clock, so it waits for NTP after a boot (a Raspberry Pi has
+  no clock battery), and if the clock is stepped later, the stored times are shifted with it.
 
 ## You need
 
-- An always-on Linux box with systemd and Python 3.10+, on the same LAN as the device. Put it and the
+- An always-on Linux box with systemd and Python 3.9+, on the same LAN as the device. Put it and the
   router on a UPS (otherwise there is nobody left to post during an outage).
 - A Xiaomi / Mi Home Wi-Fi device on **mains** power, NOT on the UPS. Anything that works with the Mi
   Home app over Wi-Fi usually speaks miIO. Bluetooth and Zigbee devices don't.
@@ -60,6 +65,13 @@ To be sure which one it is, unplug it and scan again. In the router's settings, 
 address for its MAC (DHCP reservation / static lease) so it never changes. Check a single device
 with `--probe 192.168.0.150`.
 
+Also check that the router answers the TCP port power-watch probes (53 by default). A refusal is
+fine; a timeout is not:
+
+```sh
+nc -vz 192.168.0.1 53     # "succeeded" or "refused" = good; set POWER_WATCH_GATEWAY_PORT otherwise
+```
+
 **3. Telegram**
 
 1. In Telegram, message [@BotFather](https://t.me/BotFather) → `/newbot` and copy the token.
@@ -82,9 +94,11 @@ sudo systemctl daemon-reload && sudo systemctl enable --now power-watch.service
 **5. Check**
 
 ```sh
-sudo bash -c 'set -a; . /etc/power-watch.env; power-watch --test-notify'   # a test post in the channel
-journalctl -u power-watch -f                                                # one line per change
-cat /run/power-watch/state                                                  # live state
+# a test post in the channel, with the env file read exactly as the service reads it:
+sudo systemd-run --pipe --wait -q -p EnvironmentFile=/etc/power-watch.env -p DynamicUser=yes \
+  /usr/bin/python3 /usr/local/bin/power-watch --test-notify
+journalctl -u power-watch -f       # one line per change; config errors show here too
+cat /run/power-watch/state         # live state
 ```
 
 Then unplug the device: after about a minute the channel says the power is out, and when you
@@ -131,10 +145,14 @@ return (`last_on` within a minute or two of the drop).
   an address or IPs. Use `POWER_WATCH_LABEL` only if you want a place name in them, and use a
   private channel if you'd rather choose who sees it.
 - **If the internet also goes down during an outage,** posts wait and go out once Telegram is
-  reachable, with the real times in them. Posts still waiting when the service restarts are lost,
-  but the state isn't.
+  reachable, with the real times in them. They also survive a restart of the service.
 - An outage shorter than about a minute, or one that happens while the box itself is offline, is
-  reported as "back at HH:MM after a short or unobserved outage".
+  reported as "back at HH:MM after a short or unobserved outage". So is anything else that
+  reboots the device: unplugging it, a firmware update.
+- If Telegram accepts a post but the reply is lost on the way back, the retry posts it twice.
+  Telegram has no way to deduplicate it, and it's rare.
+- A setting with a bad value stops the service (exit 2) with the reason in the journal, instead of
+  restarting forever.
 - Only miIO devices for now. A generic ping/TCP probe would work with any device, but it gives
   no power-on time, so it couldn't tell a Wi-Fi hiccup from a real outage. PRs welcome.
 
