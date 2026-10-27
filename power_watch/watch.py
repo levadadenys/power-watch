@@ -193,8 +193,10 @@ class Watch:
         self.follow_purifier()
         if kind == "other":
             # A different device at the sensor's address, and the sensor nowhere: no data. Never
-            # declare an outage from it (a replaced sensor would make that permanent).
+            # declare an outage from it (a replaced sensor would make that permanent), and break the
+            # silence streak: later silence must count from scratch, not finish an old count.
             self.warn_other()
+            self.st["misses"] = 0
             events = []
         else:
             events = step(self.st, up, gw_ok, now, cfg.interval, cfg.off_after)
