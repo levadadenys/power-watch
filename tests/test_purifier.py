@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
     import purifier as pu
 except ImportError:  # the optional dependency is missing: nothing here can run
-    pu = None
+    pu = None  # type: ignore[assignment]
 
 TOKEN = "00112233445566778899aabbccddeeff"
 DID = 12345678  # made up
