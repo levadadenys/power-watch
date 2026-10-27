@@ -18,8 +18,8 @@ def parse_hello(data: bytes) -> tuple[int, int] | None:
     return None
 
 
-def device_uptime(ip: str) -> int | None:
-    """Seconds since the device powered on, or None when it does not answer (two tries)."""
+def hello(ip: str) -> tuple[int, int] | None:
+    """(device id, seconds since it powered on), or None when it does not answer (two tries)."""
     for _ in range(2):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.settimeout(1.5)
@@ -28,9 +28,9 @@ def device_uptime(ip: str) -> int | None:
                 data, _ = s.recvfrom(1024)
             except OSError:
                 continue
-        hello = parse_hello(data)
-        if hello:
-            return hello[1]
+        reply = parse_hello(data)
+        if reply:
+            return reply
     return None
 
 
@@ -65,6 +65,15 @@ def arp_table() -> dict[str, str]:
         return {row[0]: row[3] for row in rows if len(row) > 3}
     except OSError:
         return {}
+
+
+def find(device_id: int, near_ip: str, wait_s: float = 2.0) -> str | None:
+    """The current IP of the device with this miIO id, searched in near_ip's /24; None if absent.
+    The id is permanent, the IP is whatever the router's DHCP handed out."""
+    for ip, (found_id, _) in scan(f"{near_ip}/24", wait_s).items():
+        if found_id == device_id:
+            return ip
+    return None
 
 
 def scan(cidr: str, wait_s: float = 3.0) -> dict[str, tuple[int, int]]:
