@@ -151,6 +151,15 @@ class Protocol(FakeCase):
         self.assertEqual(lines, ["🌫 The purifier isn't answering."])
         self.assertIn("wrong", logged[0])
 
+    def test_status_marks_failures_and_the_device_id_for_a_search(self):
+        fake = self.fake()
+        dev = fake.client()
+        status_and_logs(dev)
+        self.assertEqual((dev.failed, dev.did), (False, 12345678))
+        dev.port = 9  # nothing listens there: no answer
+        status_and_logs(dev)
+        self.assertTrue(dev.failed)
+
     def test_unknown_model_says_so(self):
         dev = self.fake(model="zhimi.airp.new1").client()
         self.assertEqual(status_and_logs(dev)[0], ["🌫 Purifier model zhimi.airp.new1 isn't supported yet."])
