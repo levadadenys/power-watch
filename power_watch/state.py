@@ -15,7 +15,7 @@ The watch keeps a small state dict:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from power_watch.messages import iso
 
 # A real power cut reboots the device; a boot time that moved by more than this since the
 # previous answer is a power return. Within it, the same boot (uptime and clock jitter; the
@@ -119,10 +119,6 @@ def shift_times(st: dict, delta: float) -> None:
     for k in TIME_KEYS:
         if st.get(k):
             st[k] = int(st[k] + delta)
-
-
-def iso(ts: float) -> str:
-    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def describe(kind: str, ev: dict) -> str:

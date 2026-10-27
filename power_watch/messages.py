@@ -5,7 +5,7 @@ To add a language, add a block to MESSAGES with every key (a test checks that).
 
 from __future__ import annotations
 
-from datetime import datetime, tzinfo
+from datetime import datetime, timezone, tzinfo
 
 MESSAGES = {
     "en": {
@@ -45,6 +45,11 @@ MESSAGES = {
         "stale": "Датчик не відповідає вже {d}.",
     },
 }
+
+
+def iso(ts: float) -> str:
+    """UTC timestamp for journal lines and CLI output."""
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def fmt_time(ts: float, tz: tzinfo | None, now: float) -> str:
