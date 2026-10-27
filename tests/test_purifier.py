@@ -1,18 +1,33 @@
-"""Tests for purifier: python3 -m unittest discover -s tests (skipped without python3-cryptography)"""
+"""Purifier tests against a fake device on localhost (skipped without python3-cryptography)."""
+
 import json
+import logging
 import socket
 import struct
-import sys
 import threading
 import time
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
-    import purifier as pu
+    from power_watch import purifier as pu
 except ImportError:  # the optional dependency is missing: nothing here can run
     pu = None  # type: ignore[assignment]
+
+
+def status_and_logs(dev):
+    """purifier.status() plus what it logged (assertLogs fails when nothing is logged)."""
+    records: list = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    logger = logging.getLogger("power_watch.purifier")
+    logger.addHandler(handler)
+    propagate, logger.propagate = logger.propagate, False
+    try:
+        return pu.status(dev, "en"), [r.getMessage() for r in records]
+    finally:
+        logger.removeHandler(handler)
+        logger.propagate = propagate
+
 
 TOKEN = "00112233445566778899aabbccddeeff"
 DID = 12345678  # made up
@@ -22,8 +37,18 @@ class FakePurifier:
     """A miIO device on localhost: answers hello, then decrypts requests with the device's own
     copy of the token and answers miIO.info / get_properties."""
 
-    def __init__(self, token=TOKEN, model="xiaomi.airp.cpa4", values=None, rows=None, raw_result=None,
-                 errors=(), spoof=False, chatty=False, garbled=False):
+    def __init__(
+        self,
+        token=TOKEN,
+        model="xiaomi.airp.cpa4",
+        values=None,
+        rows=None,
+        raw_result=None,
+        errors=(),
+        spoof=False,
+        chatty=False,
+        garbled=False,
+    ):
         self.dev = pu.Device("127.0.0.1", token)
         self.model = model
         self.values = values or {"on": True, "fault": 0, "mode": 0, "pm25": 7, "filter_pct": 63, "filter_days": 120}
@@ -77,9 +102,21 @@ class FakePurifier:
                 raw = self.raw_result
                 body = {"id": req["id"], **raw} if isinstance(raw, dict) else raw
             else:
-                body = {"id": req["id"], "result": self.rows if self.rows is not None else [
-                    {"did": p["did"], "siid": p["siid"], "piid": p["piid"], "code": 0,
-                     "value": self.values[p["did"]]} for p in req["params"]]}
+                body = {
+                    "id": req["id"],
+                    "result": self.rows
+                    if self.rows is not None
+                    else [
+                        {
+                            "did": p["did"],
+                            "siid": p["siid"],
+                            "piid": p["piid"],
+                            "code": 0,
+                            "value": self.values[p["did"]],
+                        }
+                        for p in req["params"]
+                    ],
+                }
             payload = json.dumps(body).encode() + b"\0"
             self.sock.sendto(self.dev.packet(DID, 1_001, payload), addr)
 
@@ -110,11 +147,13 @@ class Protocol(FakeCase):
         fake = self.fake()
         with self.assertRaises(pu.MiioError):
             fake.client(token="ff" * 16).read()
-        self.assertEqual(pu.status(fake.client(token="ff" * 16), "en"), ["🌫 The purifier isn't answering."])
+        lines, logged = status_and_logs(fake.client(token="ff" * 16))
+        self.assertEqual(lines, ["🌫 The purifier isn't answering."])
+        self.assertIn("wrong", logged[0])
 
     def test_unknown_model_says_so(self):
         dev = self.fake(model="zhimi.airp.new1").client()
-        self.assertEqual(pu.status(dev, "en"), ["🌫 Purifier model zhimi.airp.new1 isn't supported yet."])
+        self.assertEqual(status_and_logs(dev)[0], ["🌫 Purifier model zhimi.airp.new1 isn't supported yet."])
 
     def test_requests_end_with_a_nul_like_python_miio(self):
         fake = self.fake()
@@ -160,23 +199,25 @@ class Protocol(FakeCase):
             "non-dict reply (ignored until the deadline)": dict(raw_result=["not", "a", "dict"]),
             "non-dict error": dict(errors=["boom"]),
             "non-list result": dict(raw_result={"result": 5}),
-            "pm25 null": dict(values={"on": True, "fault": 0, "mode": "x", "pm25": None,
-                                      "filter_pct": 1, "filter_days": 2}),
+            "pm25 null": dict(
+                values={"on": True, "fault": 0, "mode": "x", "pm25": None, "filter_pct": 1, "filter_days": 2}
+            ),
         }
         for name, kwargs in cases.items():
             with self.subTest(name):
-                lines = pu.status(self.fake(**kwargs).client(), "en")
+                lines, _ = status_and_logs(self.fake(**kwargs).client())
                 self.assertTrue(lines and all(isinstance(line, str) for line in lines), lines)
 
     def test_failed_properties_are_reported_not_hidden(self):
         props = pu.MODELS["xiaomi.airp.cpa4"]
         failed = [{"did": n, "siid": s, "piid": p, "code": -4001} for n, (s, p) in props.items()]
-        logged = []
-        self.assertEqual(pu.status(self.fake(rows=failed).client(), "en", logged.append),
-                         ["🌫 The purifier answered, but without readings."])
+        lines, logged = status_and_logs(self.fake(rows=failed).client())
+        self.assertEqual(lines, ["🌫 The purifier answered, but without readings."])
         self.assertIn("-4001", logged[0])
-        partial = [{"did": "pm25", "siid": 3, "piid": 4, "code": 0},  # no value
-                   {"did": "filter_pct", "siid": 4, "piid": 1, "code": 0, "value": 40}]
+        partial = [
+            {"did": "pm25", "siid": 3, "piid": 4, "code": 0},  # no value
+            {"did": "filter_pct", "siid": 4, "piid": 1, "code": 0, "value": 40},
+        ]
         self.assertEqual(self.fake(rows=partial).client().read(), {"filter_pct": 40})
 
     def test_packet_round_trip_and_tamper_check(self):
@@ -191,19 +232,30 @@ class Protocol(FakeCase):
 class Lines(unittest.TestCase):
     def test_status_lines_in_both_languages(self):
         values = {"on": True, "fault": 0, "mode": 0, "pm25": 7, "filter_pct": 63, "filter_days": 120}
-        self.assertEqual(pu.status_lines(values, "en"),
-                         ["🌫 PM2.5: 7 µg/m³ (good)", "Purifier: auto", "🧻 Filter: 63% (~120 days left)"])
-        self.assertEqual(pu.status_lines(values, "uk"),
-                         ["🌫 PM2.5: 7 мкг/м³ (добре)", "Очищувач: авто", "🧻 Фільтр: 63% (≈ 120 дн.)"])
+        self.assertEqual(
+            pu.status_lines(values, "en"),
+            ["🌫 PM2.5: 7 µg/m³ (good)", "Purifier: auto", "🧻 Filter: 63% (~120 days left)"],
+        )
+        self.assertEqual(
+            pu.status_lines(values, "uk"), ["🌫 PM2.5: 7 мкг/м³ (добре)", "Очищувач: авто", "🧻 Фільтр: 63% (≈ 120 дн.)"]
+        )
 
     def test_off_fault_and_climate(self):
         lines = pu.status_lines({"on": False, "mode": 1, "fault": 2, "humidity": 45, "temperature": 22.4}, "en")
         self.assertEqual(lines, ["💧 45%   🌡 22.4 °C", "Purifier: off", "⚠️ Purifier: motor stuck"])
 
     def test_quality_bands(self):
-        self.assertEqual([pu.pm25_quality(v, "en") for v in (9, 10, 35, 36, 55, 56)],
-                         ["good", "moderate", "moderate", "unhealthy for sensitive groups",
-                          "unhealthy for sensitive groups", "unhealthy"])
+        self.assertEqual(
+            [pu.pm25_quality(v, "en") for v in (9, 10, 35, 36, 55, 56)],
+            [
+                "good",
+                "moderate",
+                "moderate",
+                "unhealthy for sensitive groups",
+                "unhealthy for sensitive groups",
+                "unhealthy",
+            ],
+        )
 
     def test_every_language_has_every_key(self):
         self.assertEqual(set(pu.MESSAGES["en"]), set(pu.MESSAGES["uk"]))

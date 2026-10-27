@@ -1,4 +1,4 @@
-"""Air purifier readings for power-watch's /status, over Xiaomi's encrypted miIO protocol.
+"""Optional air purifier readings for /status, over Xiaomi's encrypted miIO protocol.
 
 Unlike the power probe (the token-free "hello"), reading properties needs the device's 32-hex-digit
 token (Xiaomi Cloud Tokens Extractor prints it) and python3-cryptography for AES. Properties are
@@ -11,15 +11,17 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import socket
 import struct
 import time
-from collections.abc import Callable
 from typing import Any
 
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+log = logging.getLogger(__name__)
 
 PORT = 54321
 HELLO = bytes.fromhex("21310020" + "ff" * 28)
@@ -30,8 +32,14 @@ RETRYABLE_CODES = (-9999, -30001)
 # name -> (siid, piid). Optional names (humidity, temperature) only where the model has them.
 MODELS = {
     # Xiaomi Smart Air Purifier 4 Compact: PM2.5 only, no humidity/temperature sensor.
-    "xiaomi.airp.cpa4": {"on": (2, 1), "fault": (2, 2), "mode": (2, 4), "pm25": (3, 4),
-                         "filter_pct": (4, 1), "filter_days": (4, 4)},
+    "xiaomi.airp.cpa4": {
+        "on": (2, 1),
+        "fault": (2, 2),
+        "mode": (2, 4),
+        "pm25": (3, 4),
+        "filter_pct": (4, 1),
+        "filter_days": (4, 4),
+    },
 }
 
 # Per language: format strings, plus the quality words (tuple) and mode/fault names (dicts).
@@ -205,8 +213,7 @@ class Device:
         if not isinstance(result, list):
             raise MiioError("get_properties result is not a list")
         rows = [r for r in result if isinstance(r, dict)]
-        values = {r["did"]: r["value"] for r in rows
-                  if r.get("code") == 0 and "value" in r and r.get("did") in props}
+        values = {r["did"]: r["value"] for r in rows if r.get("code") == 0 and "value" in r and r.get("did") in props}
         if not values:
             raise NoReadings(f"no readings (codes {[r.get('code') for r in rows]})")
         return values
@@ -239,7 +246,7 @@ def status_lines(values: dict, lang: str) -> list[str]:
     return lines
 
 
-def status(dev: Device, lang: str, log: Callable[[str], None] = lambda _msg: None) -> list[str]:
+def status(dev: Device, lang: str) -> list[str]:
     """The purifier's /status lines. Never raises: the power status must not depend on it."""
     msgs = MESSAGES[lang]
     try:
@@ -247,8 +254,8 @@ def status(dev: Device, lang: str, log: Callable[[str], None] = lambda _msg: Non
     except UnsupportedModel as e:
         return [msgs["unsupported"].format(m=e.model)]
     except NoReadings as e:
-        log(f"purifier: {e}")
+        log.warning("purifier: %s", e)
         return [msgs["no_readings"]]
     except Exception as e:  # noqa: BLE001 — a device quirk becomes a line, never a lost reply
-        log(f"purifier: {type(e).__name__}: {e}")  # messages here never include the token
+        log.warning("purifier: %s: %s", type(e).__name__, e)  # messages here never include the token
         return [msgs["no_reply"]]

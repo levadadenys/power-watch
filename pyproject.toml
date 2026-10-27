@@ -9,16 +9,19 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.9"
-version = "0.1.0"
+dynamic = ["version"]
 
 [project.optional-dependencies]
 purifier = ["cryptography"]
 
 [project.scripts]
-power-watch = "power_watch:main"
+power-watch = "power_watch.cli:main"
 
 [tool.setuptools]
-py-modules = ["power_watch", "purifier"]
+packages = ["power_watch"]
+
+[tool.setuptools.dynamic]
+version = { attr = "power_watch.__version__" }
 
 [tool.ruff]
 line-length = 120
@@ -33,4 +36,4 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 # mypy 2.x can no longer target 3.9; the 3.9 CI job and ruff's py39 target cover that version.
 python_version = "3.10"
 ignore_missing_imports = true
-files = ["power_watch.py", "purifier.py", "tests"]
+files = ["power_watch", "tests"]
