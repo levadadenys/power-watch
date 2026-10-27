@@ -61,14 +61,21 @@ class Loop(unittest.TestCase):
             state_dir=self.dir,
         )
 
-    def run_probes(self, w, answers, start=T0):
-        """answers: device uptime per probe (None = silent); the router always answers."""
+    def run_probes(self, w, answers, start=T0, device_id=7, find=None):
+        """answers: device uptime per probe (None = silent); the router always answers. find: what a
+        network search for the sensor returns (None: not found anywhere)."""
         now = start
-        with mock.patch("power_watch.probe.gateway_up", return_value=True), self.assertLogs("power_watch"):
+        with (
+            mock.patch("power_watch.probe.gateway_up", return_value=True),
+            mock.patch("power_watch.probe.find", return_value=find) as search,
+            self.assertLogs("power_watch"),
+        ):
             for up in answers:
-                with mock.patch("power_watch.probe.device_uptime", return_value=up):
+                reply = None if up is None else (device_id, up)
+                with mock.patch("power_watch.probe.hello", return_value=reply):
                     w.probe_once(now)
                 now += self.cfg.interval
+        self.searches = search.call_count
         return now
 
     def test_an_outage_is_posted_persisted_and_survives_a_restart(self):
@@ -117,7 +124,7 @@ class Loop(unittest.TestCase):
             mock.patch("time.sleep", side_effect=sleep),
             mock.patch.object(watch.Telegram, "start"),
             mock.patch.object(watch.Commands, "start"),
-            mock.patch("power_watch.probe.device_uptime", return_value=None),
+            mock.patch("power_watch.probe.hello", return_value=None),
             mock.patch("power_watch.probe.gateway_up", return_value=True),
             self.assertLogs("power_watch.watch") as logs,
             self.assertRaises(Stop),
@@ -126,6 +133,59 @@ class Loop(unittest.TestCase):
         self.assertIn("1 unsent post(s)", logs.output[0])
         self.assertIn("wall clock stepped +3600 s", logs.output[1])
         self.assertEqual(w.st["started"], started + 3_600)
+
+    def test_a_sensor_moved_by_dhcp_is_followed_not_reported_as_an_outage(self):
+        w = watch.Watch(self.cfg)
+        self.run_probes(w, [3_600])  # learns the sensor's id at the configured IP
+        self.assertEqual(w.st["device_id"], 7)
+        moved = "192.0.2.99"
+
+        def hello(ip):  # the old address is silent; the sensor answers at its new one
+            return (7, 3_700) if ip == moved else None
+
+        with (
+            mock.patch("power_watch.probe.hello", side_effect=hello),
+            mock.patch("power_watch.probe.gateway_up", return_value=True),
+            mock.patch("power_watch.probe.find", return_value=moved),
+            self.assertLogs("power_watch.watch", "WARNING") as logs,
+        ):
+            for i in range(10):
+                w.probe_once(T0 + 15 * (i + 1))
+        self.assertEqual((w.device_ip, w.st["power"], w.tg.pending()), (moved, "on", []))
+        self.assertIn("moved 192.0.2.10 → 192.0.2.99", logs.output[0])
+
+    def test_another_device_at_the_sensors_address_is_silence(self):
+        w = watch.Watch(self.cfg)
+        self.run_probes(w, [3_600] * 10)
+        # DHCP gave the address to a different miIO device; the sensor itself is off.
+        self.run_probes(w, [60] * 6, device_id=99, start=T0 + 150)
+        self.assertEqual(w.st["power"], "off")
+        self.assertTrue(w.tg.pending()[0].startswith("⚡"))
+
+    def test_searches_are_rate_limited_during_a_real_outage(self):
+        w = watch.Watch(self.cfg)
+        self.run_probes(w, [3_600] * 10)
+        self.run_probes(w, [None] * 40, start=T0 + 150)  # 10 minutes of silence, nothing found
+        self.assertEqual(self.searches, 1)  # monotonic time barely moves in a test: one search only
+
+    def test_a_newly_configured_device_forgets_the_old_id(self):
+        store.save_state(
+            os.path.join(self.dir, "state.json"), {**new_state(T0), "device_id": 7, "device_cfg": "192.0.2.50"}, []
+        )
+        self.assertEqual(watch.Watch(self.cfg).st["device_id"], 0)
+        store.save_state(
+            os.path.join(self.dir, "state.json"), {**new_state(T0), "device_id": 7, "device_cfg": "192.0.2.10"}, []
+        )
+        self.assertEqual(watch.Watch(self.cfg).st["device_id"], 7)
+
+    def test_a_purifier_that_stopped_answering_is_looked_for(self):
+        w = watch.Watch(self.cfg)
+        dev = mock.Mock(failed=True, did=42, ip="192.0.2.155")
+        w.purifier = watch.LoadedPurifier(mock.Mock(), dev)
+        with mock.patch("power_watch.probe.find", return_value="192.0.2.154"), self.assertLogs("power_watch.watch"):
+            w.follow_purifier()
+            w.follow_purifier()  # rate-limited: no second search
+        self.assertEqual(dev.ip, "192.0.2.154")
 
     def test_status_adds_purifier_lines_and_never_fails_because_of_them(self):
         w = watch.Watch(Config(device="192.0.2.10"))
