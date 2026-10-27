@@ -151,14 +151,14 @@ class Protocol(FakeCase):
         self.assertEqual(lines, ["🌫 The purifier isn't answering."])
         self.assertIn("wrong", logged[0])
 
-    def test_status_marks_failures_and_the_device_id_for_a_search(self):
-        fake = self.fake()
-        dev = fake.client()
+    def test_a_handshake_records_the_device_id_and_rejects_another_one(self):
+        dev = self.fake().client()
         status_and_logs(dev)
-        self.assertEqual((dev.failed, dev.did), (False, 12345678))
-        dev.port = 9  # nothing listens there: no answer
-        status_and_logs(dev)
-        self.assertTrue(dev.failed)
+        self.assertEqual(dev.did, 12345678)
+        dev.did = 42  # the purifier is device 42; another device now answers at its address
+        lines, logged = status_and_logs(dev)
+        self.assertEqual((lines, dev.did), (["🌫 The purifier isn't answering."], 42))
+        self.assertIn("a different device (id 12345678)", logged[0])
 
     def test_unknown_model_says_so(self):
         dev = self.fake(model="zhimi.airp.new1").client()

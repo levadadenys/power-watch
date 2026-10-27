@@ -59,10 +59,26 @@ class StateFiles(unittest.TestCase):
 class Find(unittest.TestCase):
     def test_find_matches_the_device_id_not_the_address(self):
         found = {"192.0.2.5": (1, 10), "192.0.2.9": (7, 20)}
-        with mock.patch("power_watch.probe.scan", return_value=found) as scan:
+        with (
+            mock.patch("power_watch.probe.scan", return_value=found) as scan,
+            mock.patch("power_watch.probe.lan_of", return_value="192.0.2.0/24"),
+        ):
             self.assertEqual(probe.find(7, "192.0.2.150"), "192.0.2.9")
             self.assertIsNone(probe.find(8, "192.0.2.150"))
-        self.assertEqual(scan.call_args[0][0], "192.0.2.150/24")
+        self.assertEqual(scan.call_args[0][0], "192.0.2.0/24")
+
+
+class Lan(unittest.TestCase):
+    ROUTES = (
+        "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+        "eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"  # default via 192.168.1.1
+        "eth0\t0000A8C0\t00000000\t0001\t0\t0\t100\t00FEFFFF\t0\t0\t0\n"  # 192.168.0.0/23
+    )
+
+    def test_the_search_covers_the_whole_lan_not_just_the_24(self):
+        with mock.patch("builtins.open", mock.mock_open(read_data=self.ROUTES)):
+            self.assertEqual(probe.lan_of("192.168.1.240"), "192.168.0.0/23")
+            self.assertEqual(probe.lan_of("10.0.0.5"), "10.0.0.5/24")  # not a local network: its /24
 
 
 class Hello(unittest.TestCase):
