@@ -94,6 +94,10 @@ sudoedit /etc/power-watch.env          # device IP, token, chat id, language
 sudo systemctl daemon-reload && sudo systemctl enable --now power-watch.service
 ```
 
+**Upgrading:** run only the first three lines (they also replace an older single-file
+`/usr/local/bin/power-watch` with the link), then `sudo systemctl restart power-watch`. Don't
+rerun the `power-watch.env.example` line: it would overwrite your settings.
+
 **5. Check**
 
 ```sh
@@ -144,8 +148,12 @@ Supported models (property maps in `purifier.py`, from [miot-spec](https://home.
 |---|---|
 | `xiaomi.airp.cpa4` (Smart Air Purifier 4 Compact) | PM2.5, mode, filter life (% and days), faults |
 
-Other MiOT purifiers need one line in `MODELS`. Their humidity and temperature are shown when
-the map includes them. PRs welcome.
+Adding another MiOT purifier means a `MODELS` entry with its own siid/piid numbers, checked
+against its spec on miot-spec. Its mode and fault values may differ from the 4 Compact's too.
+Humidity and temperature are shown when the map includes them. PRs welcome.
+
+If the purifier stops answering `/status`, the reason is in `journalctl -u power-watch`, for
+example a wrong token or no readings.
 
 ## Configuration
 
