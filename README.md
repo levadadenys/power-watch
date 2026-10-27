@@ -10,7 +10,8 @@ channel; you can ask the bot `/status` (and your air purifier's readings) at any
 
 <p align="center"><img src="docs/channel.svg" width="560" alt="Channel posts: power is out since 14:02; power is back at 16:40, after 2 h 38 min. A private /status reply with the air quality."></p>
 
-Plain Python (standard library only), no cloud service, no device pairing. One command to install.
+Plain Python (standard library only; the optional purifier readings add `cryptography`), no cloud
+service, no device pairing. One command to install.
 
 ## Why
 
@@ -67,7 +68,8 @@ stateDiagram-v2
 What it handles, each with a test (the state machine in `power_watch/state.py` is pure):
 
 - **Router reboots.** After the router has been away, the lamp gets a minute to rejoin Wi-Fi before
-  its silence counts, so a router reboot is never read as an outage.
+  its silence counts, so a router reboot isn't read as an outage. (A lamp that needs more than
+  about two minutes gets a "false alarm" correction instead.)
 - **Wi-Fi hiccups.** If the lamp comes back *without* having rebooted, power never went out, and
   the channel gets a correction.
 - **No internet.** Posts queue up and go out once Telegram is reachable, with the real times.
@@ -110,7 +112,7 @@ systemd service and starts it. On the first run it:
   `/etc/power-watch.env` (readable by root only).
 
 To upgrade, `git pull` and run it again: your settings are kept. `sudo ./install.sh --uninstall`
-removes it.
+removes the program and the service; your settings and state stay.
 
 **3. Check**
 
@@ -120,8 +122,9 @@ sudo systemd-run --pipe --wait -q -p EnvironmentFile=/etc/power-watch.env -p Dyn
 journalctl -u power-watch -f                     # one line per change
 ```
 
-Then unplug the lamp for two minutes: after about one, the channel says the power is out, and
-when you plug it back in, that it's back.
+Give it a couple of minutes after the install first: the watch needs about a minute of a healthy
+network before it trusts the lamp's silence. Then unplug the lamp for three minutes: after about
+one, the channel says the power is out, and when you plug it back in, that it's back.
 
 **4. Once, in the router:** reserve the lamp's address for its MAC (*DHCP reservation* or *static
 lease*). If the router ever gave the lamp a new address, its old one would go silent, and that
@@ -185,9 +188,11 @@ A bad value stops the service with the reason in the journal, instead of restart
 ## FAQ
 
 **It posted "power is out", but the power is on.**
-Most likely the lamp got a new IP address: `power-watch --scan 192.168.0.0/24` shows where it is
-now. Set a DHCP reservation in the router (step 4). Otherwise the lamp may be dropping off Wi-Fi
-for over a minute; the channel then gets a "false alarm" correction when it's back.
+Most likely the lamp got a new IP address. `power-watch --scan 192.168.0.0/24` shows where it is
+now: put that address in `POWER_WATCH_DEVICE_IP` (`sudoedit /etc/power-watch.env`), `sudo
+systemctl restart power-watch`, and reserve the same address in the router (step 4). Otherwise
+the lamp may be dropping off Wi-Fi for over a minute; the channel then gets a "false alarm"
+correction when it's back.
 
 **It never says the power is out.**
 power-watch only counts the lamp's silence while the router answers. Check the router answers its
@@ -195,10 +200,11 @@ port: `nc -vz 192.168.0.1 53` should say "succeeded" or "refused". A timeout mea
 port; set `POWER_WATCH_GATEWAY_PORT` to one it answers (80, 443).
 
 **How do I find a private channel's id?**
-Post anything in the channel (with the bot already an admin). Then `sudo systemctl stop
-power-watch`, run `power-watch --find-chats` the way the test post above is run, put the `-100…`
-id in `TELEGRAM_CHAT_ID`, and start the service. (While it runs, the service is the bot's only
-reader of updates, so `--find-chats` would get "409 Conflict".)
+`sudo systemctl stop power-watch` (while it runs, the service is the bot's only reader of updates,
+and `--find-chats` would get "409 Conflict"). Run `power-watch --find-chats` the way the test post
+above is run: the first run also tells Telegram to deliver channel posts to the bot. Post anything
+in the channel (with the bot already an admin), run `--find-chats` again, put the `-100…` id in
+`TELEGRAM_CHAT_ID`, and `sudo systemctl start power-watch`.
 
 **The "power is back" post came a few minutes late.**
 Expected when your router reboots on power return: the post waits for the network. The time in it
@@ -206,7 +212,8 @@ is the real one.
 
 **"Power came back at 16:40 after a short or unobserved outage"?**
 The lamp rebooted between two probes: an outage shorter than about a minute, one that happened
-while the Pi itself was offline, or simply someone unplugging the lamp.
+while the Pi or the router was offline or the watch was restarting, or simply someone unplugging
+the lamp.
 
 **Is a public channel a privacy risk?**
 It tells anyone when your home has no power. Posts contain no address or IPs (use
@@ -220,7 +227,7 @@ Wi-Fi hiccup from a real outage, or say when power came back. PRs welcome.
 
 `/run/power-watch/state` is rewritten on every probe as `key=value` lines with stable keys:
 `power` (`on`/`off`/`unknown`), `since`, `last_on` (the lamp's last power-on), `last_off`,
-`last_seen` and `checked` (epoch seconds). For example, an alert script can tell whether a network
+`last_seen` and `checked`; every time is in epoch seconds, 0 meaning never. For example, an alert script can tell whether a network
 drop was the router rebooting on power return: `last_on` within a minute or two of the drop.
 
 ## Development
@@ -246,9 +253,10 @@ power_watch/
 install.sh     build (a stdlib zipapp), install, upgrade, uninstall
 ```
 
-CI runs the tests on Python 3.9–3.13 (with and without `cryptography`), ruff, mypy and
+CI runs the tests on Python 3.9–3.13 (and with `cryptography` on 3.9 and 3.13), ruff, mypy and
 shellcheck, and checks that the build is reproducible. To add a language, add a block to
-`MESSAGES` in `power_watch/messages.py`; a test checks that it has every key.
+`MESSAGES` in `power_watch/messages.py` and in `power_watch/purifier.py`; the tests check that
+every language has every key.
 
 ## Українською
 
@@ -261,8 +269,8 @@ Raspberry Pi мають бути на ДБЖ. Встановлення: `sudo ./
 ✅ Світло повернулося о 16:40. Не було 2 год 38 хв.
 ```
 
-Боту можна написати `/status` (або «світло»): він відповість, чи є світло, і покаже повітря з
-очищувача, якщо його налаштовано.
+Боту можна написати `/status` (або «світло»): дозволеним користувачам він відповість, чи є світло,
+і покаже повітря з очищувача, якщо його налаштовано.
 
 ## License
 
