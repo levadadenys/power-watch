@@ -84,7 +84,7 @@ def lan_of(ip: str) -> str:
         if gateway != bytes(4) or mask == bytes(4):  # only direct routes, never the default one
             continue
         net = ipaddress.IPv4Network(f"{socket.inet_ntoa(dest)}/{socket.inet_ntoa(mask)}", strict=False)
-        if addr in net and net.prefixlen >= 22:
+        if addr in net and 22 <= net.prefixlen <= 30:  # not a point-to-point /31 or host /32 route
             return str(net)
     return f"{ip}/24"
 
