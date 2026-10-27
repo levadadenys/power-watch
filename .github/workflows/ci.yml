@@ -15,7 +15,8 @@ concurrency:
 jobs:
   test:
     name: tests (Python ${{ matrix.python }}${{ matrix.crypto && ', with cryptography' || '' }})
-    runs-on: ubuntu-latest
+    # Pinned: Python 3.9 (Raspberry Pi OS Bullseye) is end-of-life and may have no build for newer images.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -38,7 +39,7 @@ jobs:
 
   lint:
     name: ruff + mypy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
