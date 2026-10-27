@@ -57,7 +57,8 @@ Plain Python (standard library only), no cloud, no device token. The optional ai
 2. Create a channel. Make it public with an @name, or private and share an invite link.
 3. Channel settings → Administrators → add your bot, with permission to post messages.
 4. For a public channel the chat id is `@channelname`. For a private one, post anything in the
-   channel after adding the bot; the installer's last step shows how to find its `-100…` id.
+   channel after adding the bot, leave the channel empty in the installer, and see "Private
+   channel id" below.
 
 **2. Install**
 
@@ -94,7 +95,7 @@ service again. (While it runs, the service is the bot's only reader of its updat
 ```sh
 # a test post in the channel, with the env file read exactly as the service reads it:
 sudo systemd-run --pipe --wait -q -p EnvironmentFile=/etc/power-watch.env -p DynamicUser=yes \
-  /usr/bin/python3 /usr/local/bin/power-watch --test-notify
+  /usr/local/bin/power-watch --test-notify
 journalctl -u power-watch -f       # one line per change; config errors show here too
 cat /run/power-watch/state         # live state
 ```
@@ -213,6 +214,17 @@ power-watch повідомляє в Telegram-канал, коли вдома з�
 ⚡ Світла немає з 14:02.
 ✅ Світло повернулося о 16:40. Не було 2 год 38 хв.
 ```
+
+## Development
+
+```sh
+python3 -m power_watch --scan 192.168.0.0/24       # run from a checkout, no install needed
+python3 -m unittest discover -s tests -t .         # tests (purifier tests need `cryptography`)
+pip install -r requirements-dev.txt && ruff check . && ruff format --check . && mypy
+```
+
+The code is the `power_watch/` package. Its docstring maps the modules, and `state.py` (the outage
+logic) is pure, so every edge case is a unit test.
 
 ## License
 
