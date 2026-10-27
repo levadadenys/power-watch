@@ -31,6 +31,7 @@ Usage:
   power-watch                   run the watch (systemd unit: power-watch.service)
   power-watch --scan 192.168.0.0/24   list miIO devices on the LAN
   power-watch --probe IP        one probe: is the device up, and since when
+  power-watch --find-chats      list the chats the bot was added to (the id of a private channel)
   power-watch --test-notify     send a test message to the Telegram chat
 """
 
@@ -574,11 +575,44 @@ def test_notify(cfg: dict) -> int:
     return 0 if status == "sent" else 1
 
 
+def chats_from_updates(updates: dict) -> dict[int, str]:
+    """{chat id: "type title"} for every chat in a getUpdates reply."""
+    chats = {}
+    for u in updates.get("result", []):
+        for kind in ("my_chat_member", "channel_post", "message", "chat_member"):
+            chat = (u.get(kind) or {}).get("chat")
+            if chat and "id" in chat:
+                chats[chat["id"]] = f"{chat.get('type', '?')} {chat.get('title') or chat.get('username') or ''}".strip()
+    return chats
+
+
+def find_chats(cfg: dict) -> int:
+    if not cfg["token"]:
+        log("power-watch: TELEGRAM_BOT_TOKEN unset")
+        return 2
+    url = f"https://api.telegram.org/bot{cfg['token']}/getUpdates"
+    try:
+        with urllib.request.urlopen(url, timeout=15) as r:
+            chats = chats_from_updates(json.loads(r.read()))
+    except urllib.error.HTTPError as e:
+        log(f"telegram: HTTP {e.code} {error_detail(e).get('description', '')}")
+        return 1
+    except Exception as e:  # noqa: BLE001
+        log(f"telegram: {type(e).__name__}")
+        return 1
+    for chat_id, what in chats.items():
+        log(f"{chat_id}  {what}")
+    if not chats:
+        log("no chats yet: post something in the channel (with the bot already an admin), then run this again")
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Watch mains power through a Wi-Fi device; post outages to Telegram.")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--scan", metavar="CIDR", help="list miIO devices on the LAN, e.g. 192.168.0.0/24")
     g.add_argument("--probe", metavar="IP", help="probe one device once")
+    g.add_argument("--find-chats", action="store_true", help="list chats the bot was added to, with their ids")
     g.add_argument("--test-notify", action="store_true", help="send a test message to the Telegram chat")
     args = p.parse_args()
     if args.scan:
@@ -592,6 +626,8 @@ def main() -> int:
         return 2
     if args.test_notify:
         return test_notify(cfg)
+    if args.find_chats:
+        return find_chats(cfg)
     return watch(cfg)
 
 
