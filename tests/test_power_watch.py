@@ -386,6 +386,25 @@ class PurifierLoading(unittest.TestCase):
                 sys.modules.update(saved)
         self.assertIn('OPENSSL_x', logged[0])
 
+    def test_a_broken_purifier_module_does_not_stop_the_watch(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, 'purifier.py'), 'w') as f:
+                f.write("def half_written(:\n")
+            saved = sys.modules.pop('purifier', None)
+            sys.path.insert(0, d)
+            logged, orig = [], pw.log
+            pw.log = logged.append
+            try:
+                self.assertIsNone(pw.load_purifier(self.cfg))
+            finally:
+                pw.log = orig
+                sys.path.remove(d)
+                sys.modules.pop('purifier', None)
+                if saved is not None:
+                    sys.modules['purifier'] = saved
+        self.assertIn('SyntaxError', logged[0])
+
     def test_half_configured_purifier_is_logged(self):
         logged = []
         orig, pw.log = pw.log, logged.append

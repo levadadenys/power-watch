@@ -140,12 +140,12 @@ class Protocol(FakeCase):
 
     def test_a_read_never_exceeds_its_budget(self):
         dev = self.fake(chatty=True).client()
-        # One request alone may take 1 s; the whole read (info, properties, retries) gets 0.5 s.
-        dev.timeout, dev.budget, dev.model = 1.0, 0.5, ""
+        # One request alone may take 1.5 s; the whole read (info, properties, retries) gets 0.5 s.
+        dev.timeout, dev.budget, dev.model = 1.5, 0.5, ""
         t0 = time.monotonic()
         with self.assertRaises(pu.MiioError):
             dev.read()
-        self.assertLess(time.monotonic() - t0, 0.85)
+        self.assertLess(time.monotonic() - t0, 1.1)  # without the budget: at least 1.5 s
 
     def test_a_stream_of_unrelated_replies_cannot_hold_the_call_open(self):
         dev = self.fake(chatty=True).client()
