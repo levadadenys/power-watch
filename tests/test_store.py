@@ -2,8 +2,9 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
-from power_watch import store
+from power_watch import probe, store
 from power_watch.probe import parse_hello
 from power_watch.state import new_state
 
@@ -30,6 +31,16 @@ class StateFiles(unittest.TestCase):
         self.assertEqual(store.load_state(self.path, st), ["a", "b"])
         self.assertEqual(st, {"power": "off", "last_off": 5, "last_on": 0, "misses": 0})
 
+    def test_device_identity_round_trips_with_its_types_checked(self):
+        store.save_state(self.path, {**new_state(1), "device_id": 7, "device_cfg": "192.0.2.10"}, [])
+        st = new_state(2)
+        store.load_state(self.path, st)
+        self.assertEqual((st["device_id"], st["device_cfg"]), (7, "192.0.2.10"))
+        store.write_atomic(self.path, json.dumps({"device_id": "7", "device_cfg": 5}))
+        st = new_state(2)
+        store.load_state(self.path, st)
+        self.assertEqual((st["device_id"], st["device_cfg"]), (0, ""))
+
     def test_missing_or_odd_files_are_no_state(self):
         st = new_state(1)
         self.assertEqual(store.load_state(os.path.join(self.dir.name, "missing.json"), st), [])
@@ -43,6 +54,15 @@ class StateFiles(unittest.TestCase):
         with open(path) as f:
             keys = [line.split("=")[0] for line in f.read().splitlines()]
         self.assertEqual(tuple(keys), store.PUBLIC_KEYS)
+
+
+class Find(unittest.TestCase):
+    def test_find_matches_the_device_id_not_the_address(self):
+        found = {"192.0.2.5": (1, 10), "192.0.2.9": (7, 20)}
+        with mock.patch("power_watch.probe.scan", return_value=found) as scan:
+            self.assertEqual(probe.find(7, "192.0.2.150"), "192.0.2.9")
+            self.assertIsNone(probe.find(8, "192.0.2.150"))
+        self.assertEqual(scan.call_args[0][0], "192.0.2.150/24")
 
 
 class Hello(unittest.TestCase):
