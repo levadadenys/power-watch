@@ -3,3 +3,6 @@ __pycache__/
 .env
 *.env
 !power-watch.env.example
+build/
+dist/
+*.egg-info/

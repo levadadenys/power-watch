@@ -53,8 +53,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone, tzinfo
-from typing import Callable
 
 MIIO_PORT = 54321
 # miIO hello: magic 0x2131, length 32, then 28 bytes of 0xff.
@@ -390,7 +390,8 @@ def status_text(st: dict, lang: str, tz: tzinfo | None, now: float, stale_after:
 STATUS_WORDS = ("/status", "/start", "?", "status", "статус", "світло")
 
 
-def reply_for(update: dict, allowed: frozenset[int], status: Callable[[], str], lang: str) -> tuple[int, str] | str | None:
+def reply_for(update: dict, allowed: frozenset[int], status: Callable[[], str],
+              lang: str) -> tuple[int, str] | str | None:
     """What to do with one getUpdates entry: (chat id, reply) for an allowed user's private
     message, a log line for anyone else's, None for the rest (channel posts, edits, ...)."""
     msg = update.get("message")
@@ -522,13 +523,13 @@ def write_atomic(path: str, text: str) -> None:
     os.replace(tmp, path)
 
 
-def config(env: dict | None = None) -> dict:
+def config(env: Mapping[str, str] | None = None) -> dict:
     """Validated settings; raises ConfigError naming the bad variable (the unit then stops with
     exit 2 instead of crash-looping)."""
-    env = os.environ if env is None else env
+    environ: Mapping[str, str] = os.environ if env is None else env
 
     def get(name: str, default: str = "") -> str:
-        return env.get(name, "").strip() or default
+        return environ.get(name, "").strip() or default
 
     def num(name: str, default: str, cast: Callable, minimum: float):
         try:
@@ -722,7 +723,8 @@ def read_purifier(cfg: dict) -> int:
 def arp_table() -> dict[str, str]:
     try:
         with open("/proc/net/arp") as f:
-            return {l.split()[0]: l.split()[3] for l in f.readlines()[1:] if len(l.split()) > 3}
+            rows = [line.split() for line in f.readlines()[1:]]
+        return {row[0]: row[3] for row in rows if len(row) > 3}
     except OSError:
         return {}
 

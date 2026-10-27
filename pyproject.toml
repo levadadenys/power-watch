@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "power-watch"
+description = "Know when the power goes out at home: a mains-powered Xiaomi Wi-Fi device as the sensor, posts to a Telegram channel"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+version = "0.1.0"
+
+[project.optional-dependencies]
+purifier = ["cryptography"]
+
+[project.scripts]
+power-watch = "power_watch:main"
+
+[tool.setuptools]
+py-modules = ["power_watch", "purifier"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "BLE", "RUF"]
+# Ukrainian message strings are intentional, not look-alike characters.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+# mypy 2.x can no longer target 3.9; the 3.9 CI job and ruff's py39 target cover that version.
+python_version = "3.10"
+ignore_missing_imports = true
+files = ["power_watch.py", "purifier.py", "tests"]

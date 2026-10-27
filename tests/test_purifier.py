@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
     import purifier as pu
 except ImportError:  # the optional dependency is missing: nothing here can run
-    pu = None
+    pu = None  # type: ignore[assignment]
 
 TOKEN = "00112233445566778899aabbccddeeff"
 DID = 12345678  # made up
@@ -53,7 +53,7 @@ class FakePurifier:
                 continue
             try:
                 req = self.dev.open(data)
-            except Exception:  # wrong token on the client side: a real device stays silent
+            except Exception:  # noqa: BLE001 — wrong token on the client side: a real device stays silent
                 continue
             self.requests.append(req)
             self.raw.append(self.dev.decrypt(data[32:]))
@@ -74,7 +74,8 @@ class FakePurifier:
             elif req["method"] == "miIO.info":
                 body = {"id": req["id"], "result": {"model": self.model}}
             elif self.raw_result is not None:
-                body = self.raw_result if not isinstance(self.raw_result, dict) else {"id": req["id"], **self.raw_result}
+                raw = self.raw_result
+                body = {"id": req["id"], **raw} if isinstance(raw, dict) else raw
             else:
                 body = {"id": req["id"], "result": self.rows if self.rows is not None else [
                     {"did": p["did"], "siid": p["siid"], "piid": p["piid"], "code": 0,

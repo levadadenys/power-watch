@@ -1,5 +1,9 @@
 # power-watch
 
+[![CI](https://github.com/levadadenys/power-watch/actions/workflows/ci.yml/badge.svg)](https://github.com/levadadenys/power-watch/actions/workflows/ci.yml)
+![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Know when the power goes out at home, and tell a Telegram channel.
 
 ```

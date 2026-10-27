@@ -6,10 +6,11 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from typing import ClassVar
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import power_watch as pw  # noqa: E402
+import power_watch as pw
 
 INTERVAL = 15
 OFF_AFTER = 4
@@ -280,7 +281,7 @@ class Bot(unittest.TestCase):
             strangers = [self.msg('/status', user=99) for _ in range(3)]
             for u in strangers:
                 u['message']['date'] = self.now
-            c.handle(fresh + [old] + strangers, self.now)
+            c.handle([*fresh, old, *strangers], self.now)
         finally:
             pw.log = orig
         self.assertEqual(sent, [(7, 'STATUS')])
@@ -318,8 +319,9 @@ class Bot(unittest.TestCase):
 class Config(unittest.TestCase):
     def test_defaults(self):
         cfg = pw.config({'POWER_WATCH_DEVICE_IP': '192.168.0.150'})
-        self.assertEqual((cfg['device'], cfg['lang'], cfg['interval'], cfg['off_after'], cfg['gw_port'], cfg['allowed']),
-                         ('192.168.0.150', 'en', 15.0, 4, 53, frozenset()))
+        self.assertEqual(
+            (cfg['device'], cfg['lang'], cfg['interval'], cfg['off_after'], cfg['gw_port'], cfg['allowed']),
+            ('192.168.0.150', 'en', 15.0, 4, 53, frozenset()))
         self.assertEqual(pw.config({'POWER_WATCH_ALLOWED_USERS': '7, 42 8'})['allowed'], frozenset({7, 42, 8}))
         cfg = pw.config({'POWER_WATCH_PURIFIER_IP': '192.168.0.155', 'POWER_WATCH_PURIFIER_TOKEN': 'AB' * 16})
         self.assertEqual((cfg['purifier_ip'], cfg['purifier_token']), ('192.168.0.155', 'ab' * 16))
@@ -336,7 +338,7 @@ class Config(unittest.TestCase):
 
 
 class PurifierLoading(unittest.TestCase):
-    cfg = {'purifier_ip': '192.168.0.155', 'purifier_token': 'ab' * 16}
+    cfg: ClassVar[dict] = {'purifier_ip': '192.168.0.155', 'purifier_token': 'ab' * 16}
 
     def load_with(self, blocked):
         """load_purifier() with the given modules made unimportable (None in sys.modules)."""
@@ -372,7 +374,8 @@ class PurifierLoading(unittest.TestCase):
             os.makedirs(os.path.join(d, 'cryptography'))
             with open(os.path.join(d, 'cryptography', '__init__.py'), 'w') as f:
                 f.write("raise ImportError('undefined symbol: OPENSSL_x')\n")
-            saved = {k: sys.modules.pop(k) for k in list(sys.modules) if k.split('.')[0] in ('cryptography', 'purifier')}
+            ours = ('cryptography', 'purifier')
+            saved = {k: sys.modules.pop(k) for k in list(sys.modules) if k.split('.')[0] in ours}
             sys.path.insert(0, d)
             logged, orig = [], pw.log
             pw.log = logged.append
@@ -381,7 +384,7 @@ class PurifierLoading(unittest.TestCase):
             finally:
                 pw.log = orig
                 sys.path.remove(d)
-                for k in [k for k in sys.modules if k.split('.')[0] in ('cryptography', 'purifier')]:
+                for k in [k for k in sys.modules if k.split('.')[0] in ours]:
                     del sys.modules[k]
                 sys.modules.update(saved)
         self.assertIn('OPENSSL_x', logged[0])
