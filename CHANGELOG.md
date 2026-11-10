@@ -3,6 +3,12 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Telegram
+- The "power is out" post also says how long the power had been on ("Світла немає з 08:23. Було
+  7 год 10 хв."); a Wi-Fi false alarm does not reset that span.
+
 ## [0.1.0] — 2026-10-27
 
 The first release: detecting outages, posting them, and installing with one command.

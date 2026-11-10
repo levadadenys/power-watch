@@ -15,6 +15,14 @@ class ChannelPosts(unittest.TestCase):
         self.assertEqual(message(*off, "uk", KYIV, NOW), "⚡ Світла немає з 14:02.")
         self.assertEqual(message(*on, "uk", KYIV, NOW), "✅ Світло повернулося о 16:40. Не було 2 год 38 хв.")
 
+    def test_outage_says_how_long_the_power_was_on(self):
+        off = ("off", {"off_at": kyiv(8, 23), "at_start": False, "on_since": kyiv(1, 13)})
+        self.assertEqual(message(*off, "en", KYIV, NOW), "⚡ Power is out since 08:23. It was on for 7 h 10 min.")
+        self.assertEqual(message(*off, "uk", KYIV, NOW), "⚡ Світла немає з 08:23. Було 7 год 10 хв.")
+        for on_since in (None, kyiv(8, 23)):  # unknown; or under a minute (no meaningful span)
+            off = ("off", {"off_at": kyiv(8, 23), "at_start": False, "on_since": on_since})
+            self.assertEqual(message(*off, "uk", KYIV, NOW), "⚡ Світла немає з 08:23.")
+
     def test_short_outage_is_in_minutes(self):
         on = ("on", {"boot": kyiv(14, 10), "off_at": kyiv(14, 2)})
         self.assertEqual(message(*on, "en", KYIV, NOW), "✅ Power is back at 14:10, after 8 min.")

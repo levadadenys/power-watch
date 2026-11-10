@@ -58,7 +58,8 @@ def step(st: dict, up: int | None, gw_ok: bool, now: float, interval: float, off
     """Advance the state machine by one probe: `up` is the device's uptime (None: no answer),
     `gw_ok` whether the router answered. Returns the events:
 
-        ("off", {off_at, at_start})   power went out (at_start: before the device was ever seen)
+        ("off", {off_at, at_start, on_since})   power went out (at_start: before the device was
+                                      ever seen; on_since: when the power came on, None if unknown)
         ("on", {boot, off_at})        power is back (off_at None: the start is unknown)
         ("unobserved", {boot})        the device rebooted between two answers
         ("false_alarm", {boot})       an "off" ended without a reboot: only a Wi-Fi gap
@@ -110,7 +111,8 @@ def step(st: dict, up: int | None, gw_ok: bool, now: float, interval: float, off
             st["misses"] += 1
             if st["misses"] == off_after and st["power"] != "off":
                 off_at = int(now - (off_after - 1) * interval)
-                out.append(("off", {"off_at": off_at, "at_start": st["power"] == "unknown"}))
+                on_since = st["since"] if st["power"] == "on" else None
+                out.append(("off", {"off_at": off_at, "at_start": st["power"] == "unknown", "on_since": on_since}))
                 st.update(prev_since=st["since"], prev_last_off=st["last_off"])
                 st.update(power="off", since=off_at, last_off=off_at)
     else:

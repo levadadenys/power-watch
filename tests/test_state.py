@@ -15,7 +15,8 @@ class Outages(unittest.TestCase):
         self.assertEqual(w.st["power"], "on", "three misses are not an outage")
         w.silent()
         self.assertEqual(w.st["power"], "off")
-        self.assertEqual(w.events[-1], ("off", {"off_at": w.st["last_off"], "at_start": False}))
+        on_since = DEVICE_BOOT  # the device's power-on: how long the power had been on
+        self.assertEqual(w.events[-1], ("off", {"off_at": w.st["last_off"], "at_start": False, "on_since": on_since}))
         off_at = w.st["last_off"]
         w.silent(n=20)
         back = w.now - 5
@@ -27,6 +28,7 @@ class Outages(unittest.TestCase):
         w = Probes().silent(n=10)
         self.assertEqual(w.st["power"], "off")
         self.assertTrue(w.events[-1][1]["at_start"])
+        self.assertIsNone(w.events[-1][1]["on_since"])
         back = w.now - 20
         w.device(boot=back).device(boot=back)
         self.assertEqual((w.st["power"], w.st["last_on"]), ("on", back))
@@ -91,6 +93,8 @@ class FalseAlarms(unittest.TestCase):
             (w.st["power"], w.st["since"], w.st["last_off"], w.st["last_on"]), ("on", since, last_off, DEVICE_BOOT)
         )
         self.assertEqual(w.kinds()[-1], "false_alarm")
+        w.silent(n=10)  # the next real outage counts "on" from before the Wi-Fi gap
+        self.assertEqual(w.events[-1][1]["on_since"], since)
 
     def test_device_slow_to_join_at_start_is_a_false_alarm(self):
         # "Off" declared before the first answer, but the device has been up since before the
@@ -145,7 +149,7 @@ class Restarts(unittest.TestCase):
 class JournalLines(unittest.TestCase):
     def test_every_event_kind_has_one(self):
         for kind, ev in [
-            ("off", {"off_at": T0, "at_start": False}),
+            ("off", {"off_at": T0, "at_start": False, "on_since": None}),
             ("on", {"boot": T0, "off_at": None}),
             ("unobserved", {"boot": T0}),
             ("false_alarm", {"boot": T0}),

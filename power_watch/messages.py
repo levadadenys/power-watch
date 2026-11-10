@@ -10,6 +10,7 @@ from datetime import datetime, timezone, tzinfo
 MESSAGES = {
     "en": {
         "off": "⚡ Power is out since {t}.",
+        "off_dur": "⚡ Power is out since {t}. It was on for {d}.",
         "off_start": "⚡ Power is out (noticed at {t}).",
         "on": "✅ Power is back at {t}, after {d}.",
         "on_nodur": "✅ Power is back at {t}.",
@@ -28,6 +29,7 @@ MESSAGES = {
     },
     "uk": {
         "off": "⚡ Світла немає з {t}.",
+        "off_dur": "⚡ Світла немає з {t}. Було {d}.",
         "off_start": "⚡ Світла немає (помічено о {t}).",
         "on": "✅ Світло повернулося о {t}. Не було {d}.",
         "on_nodur": "✅ Світло повернулося о {t}.",
@@ -71,7 +73,14 @@ def message(kind: str, ev: dict, lang: str, tz: tzinfo | None, now: float, label
     """The channel post for a state-machine event, or None when the event is not worth one."""
     msgs = MESSAGES[lang]
     if kind == "off":
-        text = msgs["off_start" if ev["at_start"] else "off"].format(t=fmt_time(ev["off_at"], tz, now))
+        t = fmt_time(ev["off_at"], tz, now)
+        on_since = ev.get("on_since")
+        if ev["at_start"]:
+            text = msgs["off_start"].format(t=t)
+        elif on_since and ev["off_at"] - on_since >= 60:
+            text = msgs["off_dur"].format(t=t, d=fmt_duration(ev["off_at"] - on_since, msgs))
+        else:
+            text = msgs["off"].format(t=t)
     elif kind == "on":
         t = fmt_time(ev["boot"], tz, now)
         # A device that rebooted before "off" was declared (short cut over a router reboot)
