@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import signal
 import threading
 import time
 from types import ModuleType
@@ -270,16 +271,26 @@ class Watch:
             f", {pending} unsent post(s)" if pending else "",
         )
         clock_offset = time.time() - time.monotonic()
-        while True:
-            t0, m0 = time.time(), time.monotonic()
-            jump = (t0 - m0) - clock_offset
-            clock_offset = t0 - m0
-            if abs(jump) > CLOCK_STEP_S:
-                log.info("power-watch: wall clock stepped %+.0f s — shifting stored times", jump)
-                shift_times(self.st, jump)
-                self.persist()
-            self.probe_once(t0)
-            time.sleep(max(0.0, cfg.interval - (time.monotonic() - m0)))
+        try:
+            while True:
+                t0, m0 = time.time(), time.monotonic()
+                jump = (t0 - m0) - clock_offset
+                clock_offset = t0 - m0
+                if abs(jump) > CLOCK_STEP_S:
+                    log.info("power-watch: wall clock stepped %+.0f s — shifting stored times", jump)
+                    shift_times(self.st, jump)
+                    self.persist()
+                self.probe_once(t0)
+                time.sleep(max(0.0, cfg.interval - (time.monotonic() - m0)))
+        finally:
+            # Save on the way out too (a stop, a restart, an error): otherwise the saved last_seen is
+            # as old as the last event, and an outage right after a restart would lose its "on" span.
+            self.persist()
+
+
+def stop(_signum: int, _frame: object) -> None:
+    """SIGTERM (systemd's stop): unwind like Ctrl-C, so run() saves the state on the way out."""
+    raise SystemExit(0)
 
 
 def watch(cfg: Config) -> int:
@@ -287,5 +298,6 @@ def watch(cfg: Config) -> int:
         log.error("power-watch: POWER_WATCH_DEVICE_IP unset — nothing to watch")
         return 2  # the unit's RestartPreventExitStatus: a config error, not worth retrying
     wait_for_clock()
+    signal.signal(signal.SIGTERM, stop)
     Watch(cfg).run()
     return 0

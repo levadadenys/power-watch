@@ -135,6 +135,33 @@ class Loop(unittest.TestCase):
         self.assertIn("wall clock stepped +3600 s", logs.output[1])
         self.assertEqual(w.st["started"], started + 3_600)
 
+    def test_stopping_saves_the_last_answer(self):
+        # state.json is written on events only; a stop must still leave a fresh last_seen, or an
+        # outage right after the restart would leave out how long the power had been on.
+        w = watch.Watch(self.cfg)
+        sleeps = {"n": 0}
+
+        def sleep(_s):
+            sleeps["n"] += 1
+            if sleeps["n"] == 3:
+                watch.stop(15, None)  # SIGTERM
+
+        with (
+            mock.patch("time.time", side_effect=lambda: float(T0 + 15 * sleeps["n"])),
+            mock.patch("time.monotonic", side_effect=lambda: 100.0 + 15 * sleeps["n"]),  # no clock step
+            mock.patch("time.sleep", side_effect=sleep),
+            mock.patch.object(watch.Telegram, "start"),
+            mock.patch.object(watch.Commands, "start"),
+            mock.patch("power_watch.probe.hello", side_effect=lambda *a, **k: (7, 3_600 + 15 * sleeps["n"])),
+            mock.patch("power_watch.probe.gateway_up", return_value=True),
+            self.assertLogs("power_watch.watch"),
+            self.assertRaises(SystemExit),
+        ):
+            w.run()
+        restored = new_state(0)
+        store.load_state(os.path.join(self.dir, "state.json"), restored)
+        self.assertEqual(restored["last_seen"], T0 + 30)  # the third probe's answer
+
     def drive(self, w, hello, find, probes, start=T0 + 150, monotonic=100.0):
         """probe_once n times with fake network functions; returns (searches, warnings logged)."""
         clock = {"m": monotonic}
