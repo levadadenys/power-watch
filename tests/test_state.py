@@ -1,6 +1,6 @@
 import unittest
 
-from power_watch.state import BOOT_JUMP_S, describe, shift_times
+from power_watch.state import BOOT_JUMP_S, SPAN_GAP_S, describe, shift_times
 from tests.helpers import DEVICE_BOOT, INTERVAL, T0, Probes
 
 
@@ -60,6 +60,13 @@ class RouterReboots(unittest.TestCase):
         w.device(boot=back)
         self.assertEqual((w.st["power"], w.st["last_on"]), ("on", back))
         self.assertEqual(w.events[-1], ("unobserved", {"boot": back}))
+
+    def test_unobserved_return_restarts_the_on_span(self):
+        w = Probes().device(n=3)
+        back = w.now - 5
+        w.device(boot=back).device(boot=back).silent(n=10)
+        self.assertEqual(w.kinds(), ["baseline", "unobserved", "off"])
+        self.assertEqual(w.events[-1][1]["on_since"], back)
 
     def test_reboot_before_off_was_declared_is_still_a_power_return(self):
         # Power returns and the device reboots during the router grace, but rejoins Wi-Fi only
@@ -121,6 +128,20 @@ class Restarts(unittest.TestCase):
         back = w.now - 5
         w.device(boot=back)
         self.assertEqual(w.events, [("on", {"boot": back, "off_at": off_at})])
+
+    def test_restart_while_on_keeps_the_on_span(self):
+        # Restored from state.json: on since a day ago, the device last seen just before this run.
+        since = T0 - 86_400
+        w = Probes(power="on", since=since, last_on=since, last_seen=T0 - 30).silent(n=10)
+        self.assertEqual(w.events[-1][0], "off")
+        self.assertEqual(w.events[-1][1]["on_since"], since)
+
+    def test_no_on_span_after_a_long_blind_spot(self):
+        # The watch was down for hours: when the power went out in that time is unknown.
+        since = T0 - 86_400
+        w = Probes(power="on", since=since, last_on=since, last_seen=T0 - SPAN_GAP_S - 60).silent(n=10)
+        self.assertEqual(w.events[-1][0], "off")
+        self.assertIsNone(w.events[-1][1]["on_since"])
 
     def test_restart_after_an_outage_seen_only_from_the_start(self):
         # Run 1 started during an outage (last_on never known); power came back while the watch

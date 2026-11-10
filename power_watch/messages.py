@@ -49,6 +49,10 @@ MESSAGES = {
 }
 
 
+# Shorter than this, a duration means nothing (a reboot or a blip): the post leaves it out.
+MIN_SPAN_S = 60
+
+
 def iso(ts: float) -> str:
     """UTC timestamp for journal lines and CLI output."""
     return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -74,10 +78,10 @@ def message(kind: str, ev: dict, lang: str, tz: tzinfo | None, now: float, label
     msgs = MESSAGES[lang]
     if kind == "off":
         t = fmt_time(ev["off_at"], tz, now)
-        on_since = ev.get("on_since")
+        on_since = ev["on_since"]
         if ev["at_start"]:
             text = msgs["off_start"].format(t=t)
-        elif on_since and ev["off_at"] - on_since >= 60:
+        elif on_since and ev["off_at"] - on_since >= MIN_SPAN_S:
             text = msgs["off_dur"].format(t=t, d=fmt_duration(ev["off_at"] - on_since, msgs))
         else:
             text = msgs["off"].format(t=t)
@@ -85,7 +89,7 @@ def message(kind: str, ev: dict, lang: str, tz: tzinfo | None, now: float, label
         t = fmt_time(ev["boot"], tz, now)
         # A device that rebooted before "off" was declared (short cut over a router reboot)
         # has no meaningful duration.
-        if ev["off_at"] and ev["boot"] - ev["off_at"] >= 60:
+        if ev["off_at"] and ev["boot"] - ev["off_at"] >= MIN_SPAN_S:
             text = msgs["on"].format(t=t, d=fmt_duration(ev["boot"] - ev["off_at"], msgs))
         else:
             text = msgs["on_nodur"].format(t=t)
