@@ -8,12 +8,32 @@ NOW = kyiv(18, 0)
 
 class ChannelPosts(unittest.TestCase):
     def test_outage_and_return_in_both_languages(self):
-        off = ("off", {"off_at": kyiv(14, 2), "at_start": False})
+        off = ("off", {"off_at": kyiv(14, 2), "at_start": False, "on_since": None})
         on = ("on", {"boot": kyiv(16, 40), "off_at": kyiv(14, 2)})
         self.assertEqual(message(*off, "en", KYIV, NOW), "⚡ Power is out since 14:02.")
         self.assertEqual(message(*on, "en", KYIV, NOW), "✅ Power is back at 16:40, after 2 h 38 min.")
         self.assertEqual(message(*off, "uk", KYIV, NOW), "⚡ Світла немає з 14:02.")
         self.assertEqual(message(*on, "uk", KYIV, NOW), "✅ Світло повернулося о 16:40. Не було 2 год 38 хв.")
+
+    def test_outage_says_how_long_the_power_was_on(self):
+        off = ("off", {"off_at": kyiv(8, 23), "at_start": False, "on_since": kyiv(1, 13)})
+        self.assertEqual(message(*off, "en", KYIV, NOW), "⚡ Power is out since 08:23. It was on for 7 h 10 min.")
+        self.assertEqual(message(*off, "uk", KYIV, NOW), "⚡ Світла немає з 08:23. Було 7 год 10 хв.")
+        for on_since in (None, kyiv(8, 23)):  # unknown; or under a minute (no meaningful span)
+            off = ("off", {"off_at": kyiv(8, 23), "at_start": False, "on_since": on_since})
+            self.assertEqual(message(*off, "uk", KYIV, NOW), "⚡ Світла немає з 08:23.")
+        off = ("off", {"off_at": kyiv(8, 23), "at_start": False, "on_since": kyiv(8, 23) - 60})
+        self.assertEqual(message(*off, "en", KYIV, NOW), "⚡ Power is out since 08:23. It was on for 1 min.")
+        off = ("off", {"off_at": kyiv(8, 23), "at_start": False, "on_since": kyiv(8, 23) - 59})
+        self.assertEqual(message(*off, "en", KYIV, NOW), "⚡ Power is out since 08:23.")
+
+    def test_long_on_span_is_in_days(self):
+        off = ("off", {"off_at": kyiv(8, 23), "at_start": False, "on_since": kyiv(8, 23) - 26 * 3_600})
+        self.assertEqual(message(*off, "uk", KYIV, NOW), "⚡ Світла немає з 08:23. Було 1 д 2 год.")
+
+    def test_outage_seen_at_start_never_has_a_span(self):
+        off = ("off", {"off_at": kyiv(8, 23), "at_start": True, "on_since": kyiv(1, 13)})
+        self.assertEqual(message(*off, "en", KYIV, NOW), "⚡ Power is out (noticed at 08:23).")
 
     def test_short_outage_is_in_minutes(self):
         on = ("on", {"boot": kyiv(14, 10), "off_at": kyiv(14, 2)})
@@ -25,7 +45,7 @@ class ChannelPosts(unittest.TestCase):
             self.assertEqual(message(*on, "en", KYIV, NOW), "✅ Power is back at 14:10.")
 
     def test_other_days_show_the_date(self):
-        off = ("off", {"off_at": kyiv(23, 50, day=26), "at_start": False})
+        off = ("off", {"off_at": kyiv(23, 50, day=26), "at_start": False, "on_since": None})
         self.assertEqual(message(*off, "en", KYIV, NOW), "⚡ Power is out since 26.10 23:50.")
 
     def test_label_prefix_and_silent_events(self):

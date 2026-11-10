@@ -27,6 +27,10 @@ BOOT_JUMP_S = 30
 # A wall-clock jump larger than this between two probes (NTP stepping the clock) shifts every
 # stored time by the same amount instead of being read as a reboot.
 CLOCK_STEP_S = 5
+# An outage post says how long the power had been on only when the device answered at most this
+# long before the outage: after a longer blind spot (the watch was down, a long router outage),
+# the moment the power went out is not known well enough to measure up to it.
+SPAN_GAP_S = 600
 TIME_KEYS = ("since", "last_on", "last_off", "last_seen", "checked", "prev_since", "prev_last_off", "started")
 
 Event = tuple[str, dict]
@@ -58,7 +62,9 @@ def step(st: dict, up: int | None, gw_ok: bool, now: float, interval: float, off
     """Advance the state machine by one probe: `up` is the device's uptime (None: no answer),
     `gw_ok` whether the router answered. Returns the events:
 
-        ("off", {off_at, at_start})   power went out (at_start: before the device was ever seen)
+        ("off", {off_at, at_start, on_since})   power went out (at_start: before the device was
+                                      ever seen; on_since: when the power had come on, None when
+                                      unknown or the device was not seen just before)
         ("on", {boot, off_at})        power is back (off_at None: the start is unknown)
         ("unobserved", {boot})        the device rebooted between two answers
         ("false_alarm", {boot})       an "off" ended without a reboot: only a Wi-Fi gap
@@ -110,7 +116,9 @@ def step(st: dict, up: int | None, gw_ok: bool, now: float, interval: float, off
             st["misses"] += 1
             if st["misses"] == off_after and st["power"] != "off":
                 off_at = int(now - (off_after - 1) * interval)
-                out.append(("off", {"off_at": off_at, "at_start": st["power"] == "unknown"}))
+                seen_lately = off_at - st["last_seen"] <= SPAN_GAP_S
+                on_since = st["since"] if st["power"] == "on" and seen_lately else None
+                out.append(("off", {"off_at": off_at, "at_start": st["power"] == "unknown", "on_since": on_since}))
                 st.update(prev_since=st["since"], prev_last_off=st["last_off"])
                 st.update(power="off", since=off_at, last_off=off_at)
     else:
@@ -132,7 +140,8 @@ def shift_times(st: dict, delta: float) -> None:
 def describe(kind: str, ev: dict) -> str:
     """One journal line per event (English, UTC)."""
     if kind == "off":
-        return f"power OFF — device silent since ~{iso(ev['off_at'])} while the router answers"
+        on = f"; on since {iso(ev['on_since'])}" if ev["on_since"] else ""
+        return f"power OFF — device silent since ~{iso(ev['off_at'])} while the router answers{on}"
     if kind == "on":
         since = f"; silent since ~{iso(ev['off_at'])}" if ev["off_at"] else ""
         return f"power ON — device powered on at {iso(ev['boot'])}{since}"
