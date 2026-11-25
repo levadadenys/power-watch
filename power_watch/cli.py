@@ -11,7 +11,7 @@ import urllib.error
 
 from power_watch import __version__, config, probe
 from power_watch.messages import MESSAGES, iso
-from power_watch.telegram import Telegram, error_detail, fetch_chats
+from power_watch.telegram import Telegram, describe, error_detail, fetch_chats
 from power_watch.watch import load_purifier, watch
 
 log = logging.getLogger("power_watch")
@@ -59,8 +59,8 @@ def cmd_find_chats(cfg: config.Config) -> int:
     except urllib.error.HTTPError as e:  # 409: the service is running (it reads the updates); stop it first
         print(f"telegram: HTTP {e.code} {error_detail(e).get('description', '')}", file=sys.stderr)
         return 1
-    except Exception as e:  # noqa: BLE001 — never print the exception text: it may hold the URL
-        print(f"telegram: {type(e).__name__}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 — describe() scrubs the token from the text
+        print(f"telegram: {describe(e, cfg.token)}", file=sys.stderr)
         return 1
     for chat_id, what in chats.items():
         print(f"{chat_id}  {what}")

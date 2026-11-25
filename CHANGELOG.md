@@ -10,6 +10,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   7 год 10 хв."), counted from the device's last power-on. A Wi-Fi false alarm does not reset it;
   it is left out when the device went unseen for over 10 minutes before the outage (#14).
 
+### Logging
+- Failed Telegram calls log the reason, not just the exception type ("getUpdates URLError:
+  gaierror: [Errno -3] Temporary failure in name resolution"), so an outage shows whether DNS,
+  routing or Telegram was down. The bot token is scrubbed from the text.
+
 ## [0.1.0] — 2026-10-27
 
 The first release: detecting outages, posting them, and installing with one command.

@@ -1,6 +1,7 @@
 """Telegram Bot API: channel posts that survive outages, plus the helpers the CLI needs.
 
-The bot token is part of every request URL, so nothing here ever logs a URL or a request.
+The bot token is part of every request URL, so nothing here ever logs a URL or a request, and
+exception text is logged only through describe(), which scrubs the token out.
 """
 
 from __future__ import annotations
@@ -28,6 +29,20 @@ def error_detail(e: urllib.error.HTTPError) -> dict:
     return detail if isinstance(detail, dict) else {}
 
 
+def describe(e: BaseException, token: str) -> str:
+    """The exception's type and reason for the log, e.g. "URLError: gaierror: [Errno -3] Temporary
+    failure in name resolution", so an outage shows whether DNS, routing or Telegram failed. Some
+    messages quote the request URL, so the token is scrubbed out."""
+    cause = e.reason if isinstance(e, urllib.error.URLError) else None
+    if isinstance(cause, BaseException):
+        text = f"{type(e).__name__}: {type(cause).__name__}: {cause}"
+    else:
+        text = f"{type(e).__name__}: {cause if cause is not None else e}"
+    if token:
+        text = text.replace(token, "<token>")
+    return text.rstrip(": ")[:200]  # rstrip: an exception without a message
+
+
 class Telegram:
     """Posts in order from a background thread, retrying until Telegram is reachable again
     (the network is often down right when power returns), so probing never blocks on it.
@@ -36,6 +51,7 @@ class Telegram:
     def __init__(
         self, token: str, chat_id: str, outbox: list[str] | None = None, on_sent: Callable[[], None] | None = None
     ):
+        self.token = token
         self.base = API.format(token=token)
         self.url = self.base + "sendMessage"
         self.chat_id = chat_id
@@ -51,6 +67,9 @@ class Telegram:
         with self.cv:
             self.outbox.append(text)
             self.cv.notify()
+
+    def describe(self, e: BaseException) -> str:
+        return describe(e, self.token)
 
     def pending(self) -> list[str]:
         with self.cv:
@@ -78,7 +97,7 @@ class Telegram:
             log.warning("telegram: send failed, HTTP %s", e.code)
             return "retry", 30
         except Exception as e:  # noqa: BLE001 — anything else (garbage replies too) is transient
-            log.warning("telegram: send failed, %s", type(e).__name__)
+            log.warning("telegram: send failed, %s", self.describe(e))
             return "retry", 30
 
     def call(self, method: str, params: dict, timeout: float) -> dict:
@@ -107,7 +126,7 @@ class Telegram:
                     self.outbox.pop(0)
                 self.on_sent()
             except Exception as e:  # noqa: BLE001 — the worker must outlive any surprise
-                log.warning("telegram: worker %s — retrying in 30 s", type(e).__name__)
+                log.warning("telegram: worker %s — retrying in 30 s", self.describe(e))
                 time.sleep(30)
 
 

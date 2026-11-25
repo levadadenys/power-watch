@@ -1,11 +1,12 @@
 import http.client
 import io
+import socket
 import threading
 import unittest
 import urllib.error
 from unittest import mock
 
-from power_watch.telegram import Telegram, chats_from_updates
+from power_watch.telegram import Telegram, chats_from_updates, describe
 
 
 class FakeHTTPError(urllib.error.HTTPError):
@@ -46,6 +47,28 @@ class Send(unittest.TestCase):
         ):
             Telegram("SECRET", "@c").send("hi")
         self.assertNotIn("SECRET", "".join(logs.output))
+        self.assertIn("OSError: https://api.telegram.org/bot<token>/x", "".join(logs.output))
+
+
+TOKEN = "123456:SECRET"
+
+
+class Describe(unittest.TestCase):
+    def test_says_why_the_network_failed(self):
+        dns = urllib.error.URLError(socket.gaierror(-3, "Temporary failure in name resolution"))
+        self.assertEqual(describe(dns, TOKEN), "URLError: gaierror: [Errno -3] Temporary failure in name resolution")
+        unreachable = urllib.error.URLError(OSError(101, "Network is unreachable"))
+        self.assertEqual(describe(unreachable, TOKEN), "URLError: OSError: [Errno 101] Network is unreachable")
+        self.assertEqual(describe(urllib.error.URLError("no host given"), TOKEN), "URLError: no host given")
+        self.assertEqual(describe(TimeoutError("timed out"), TOKEN), "TimeoutError: timed out")
+        self.assertEqual(describe(TimeoutError(), TOKEN), "TimeoutError")
+
+    def test_scrubs_the_token_and_stays_short(self):
+        err = urllib.error.URLError("unknown url type: xhttps://api.telegram.org/botSECRET/getUpdates")
+        self.assertEqual(
+            describe(err, "SECRET"), "URLError: unknown url type: xhttps://api.telegram.org/bot<token>/getUpdates"
+        )
+        self.assertLessEqual(len(describe(ValueError("x" * 1000), TOKEN)), 200)
 
 
 class Outbox(unittest.TestCase):
