@@ -15,6 +15,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
   gaierror: [Errno -3] Temporary failure in name resolution"), so an outage shows whether DNS,
   routing or Telegram was down. The bot token is scrubbed from the text.
 
+### Config
+- A malformed `TELEGRAM_BOT_TOKEN` (a `# comment` after it, a stray tab) is now a config error at
+  start-up instead of failing every request; the error never echoes the token.
+
 ## [0.1.0] — 2026-10-27
 
 The first release: detecting outages, posting them, and installing with one command.

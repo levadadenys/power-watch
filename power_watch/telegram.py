@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 import urllib.error
@@ -32,15 +33,22 @@ def error_detail(e: urllib.error.HTTPError) -> dict:
 def describe(e: BaseException, token: str) -> str:
     """The exception's type and reason for the log, e.g. "URLError: gaierror: [Errno -3] Temporary
     failure in name resolution", so an outage shows whether DNS, routing or Telegram failed. Some
-    messages quote the request URL, so the token is scrubbed out."""
-    cause = e.reason if isinstance(e, urllib.error.URLError) else None
-    if isinstance(cause, BaseException):
-        text = f"{type(e).__name__}: {type(cause).__name__}: {cause}"
-    else:
-        text = f"{type(e).__name__}: {cause if cause is not None else e}"
-    if token:
-        text = text.replace(token, "<token>")
-    return text.rstrip(": ")[:200]  # rstrip: an exception without a message
+    messages quote the request URL, so the token is scrubbed out: as configured, as repr() escapes
+    it, and anything after "/bot" in a URL, however it is spelled there."""
+    try:
+        cause = e.reason if isinstance(e, urllib.error.URLError) else None
+        parts = [type(e).__name__]
+        if isinstance(cause, BaseException):
+            parts.append(type(cause).__name__)
+        message = str(cause if cause is not None else e)
+        if message:
+            parts.append(message)
+        text = ": ".join(parts)
+        for spelling in (token, repr(token)[1:-1]) if token else ():
+            text = text.replace(spelling, "<token>")
+        return re.sub(r"/bot[^/\s'\"]+", "/bot<token>", text)[:200]
+    except Exception:  # noqa: BLE001 — called from except blocks: never raise, never leak
+        return type(e).__name__
 
 
 class Telegram:

@@ -69,6 +69,28 @@ class Describe(unittest.TestCase):
             describe(err, "SECRET"), "URLError: unknown url type: xhttps://api.telegram.org/bot<token>/getUpdates"
         )
         self.assertLessEqual(len(describe(ValueError("x" * 1000), TOKEN)), 200)
+        self.assertEqual(describe(ValueError("ends with a colon:"), TOKEN), "ValueError: ends with a colon:")
+
+    def test_scrubs_a_malformed_token_too(self):
+        # config.from_env rejects these; the scrubbing must hold without that check as well.
+        # http.client quotes the path with repr() (a tab shows as "\\t"), or cut at the "#".
+        for token in ("123:SECRETabc # bot token", "123:SECRET\tabc", "123:SECRET\x7fabc"):
+            with (
+                self.subTest(token=token),
+                mock.patch("socket.create_connection", side_effect=AssertionError("no network in tests")),
+                self.assertRaises(http.client.InvalidURL) as caught,
+            ):
+                Telegram(token, "@c").call("getUpdates", {}, 1)
+            text = describe(caught.exception, token)
+            self.assertIn("/bot<token>", text)
+            self.assertNotIn("SECRET", text)
+
+    def test_never_raises(self):
+        class Broken(Exception):
+            def __str__(self):
+                raise RuntimeError("no")
+
+        self.assertEqual(describe(Broken(), TOKEN), "Broken")
 
 
 class Outbox(unittest.TestCase):
