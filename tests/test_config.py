@@ -30,6 +30,9 @@ class Config(unittest.TestCase):
             {"POWER_WATCH_PURIFIER_TOKEN": "abc"},
             {"POWER_WATCH_PURIFIER_TOKEN": "z" * 32},
             {"POWER_WATCH_PURIFIER_IP": "purifier"},
+            {"TELEGRAM_BOT_TOKEN": "123:abc # bot token"},
+            {"TELEGRAM_BOT_TOKEN": "123:ab\tc"},
+            {"TELEGRAM_BOT_TOKEN": "abc"},
         ):
             with self.subTest(env=env), self.assertRaises(ConfigError):
                 from_env(env)
@@ -39,6 +42,13 @@ class Config(unittest.TestCase):
         with self.assertRaises(ConfigError) as e:
             from_env({"POWER_WATCH_PURIFIER_TOKEN": token})
         self.assertNotIn(token, str(e.exception))
+        with self.assertRaises(ConfigError) as e:
+            from_env({"TELEGRAM_BOT_TOKEN": "123:SECRET # bot token"})
+        self.assertNotIn("SECRET", str(e.exception))
+
+    def test_a_well_formed_bot_token_passes(self):
+        token = "123456:AAH-x_9Zq"
+        self.assertEqual(from_env({"TELEGRAM_BOT_TOKEN": f" {token} "}).token, token)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,12 @@
 import http.client
 import io
+import socket
 import threading
 import unittest
 import urllib.error
 from unittest import mock
 
-from power_watch.telegram import Telegram, chats_from_updates
+from power_watch.telegram import Telegram, chats_from_updates, describe
 
 
 class FakeHTTPError(urllib.error.HTTPError):
@@ -46,6 +47,50 @@ class Send(unittest.TestCase):
         ):
             Telegram("SECRET", "@c").send("hi")
         self.assertNotIn("SECRET", "".join(logs.output))
+        self.assertIn("OSError: https://api.telegram.org/bot<token>/x", "".join(logs.output))
+
+
+TOKEN = "123456:SECRET"
+
+
+class Describe(unittest.TestCase):
+    def test_says_why_the_network_failed(self):
+        dns = urllib.error.URLError(socket.gaierror(-3, "Temporary failure in name resolution"))
+        self.assertEqual(describe(dns, TOKEN), "URLError: gaierror: [Errno -3] Temporary failure in name resolution")
+        unreachable = urllib.error.URLError(OSError(101, "Network is unreachable"))
+        self.assertEqual(describe(unreachable, TOKEN), "URLError: OSError: [Errno 101] Network is unreachable")
+        self.assertEqual(describe(urllib.error.URLError("no host given"), TOKEN), "URLError: no host given")
+        self.assertEqual(describe(TimeoutError("timed out"), TOKEN), "TimeoutError: timed out")
+        self.assertEqual(describe(TimeoutError(), TOKEN), "TimeoutError")
+
+    def test_scrubs_the_token_and_stays_short(self):
+        err = urllib.error.URLError("unknown url type: xhttps://api.telegram.org/botSECRET/getUpdates")
+        self.assertEqual(
+            describe(err, "SECRET"), "URLError: unknown url type: xhttps://api.telegram.org/bot<token>/getUpdates"
+        )
+        self.assertLessEqual(len(describe(ValueError("x" * 1000), TOKEN)), 200)
+        self.assertEqual(describe(ValueError("ends with a colon:"), TOKEN), "ValueError: ends with a colon:")
+
+    def test_scrubs_a_malformed_token_too(self):
+        # config.from_env rejects these; the scrubbing must hold without that check as well.
+        # http.client quotes the path with repr() (a tab shows as "\\t"), or cut at the "#".
+        for token in ("123:SECRETabc # bot token", "123:SECRET\tabc", "123:SECRET\x7fabc"):
+            with (
+                self.subTest(token=token),
+                mock.patch("socket.create_connection", side_effect=AssertionError("no network in tests")),
+                self.assertRaises(http.client.InvalidURL) as caught,
+            ):
+                Telegram(token, "@c").call("getUpdates", {}, 1)
+            text = describe(caught.exception, token)
+            self.assertIn("/bot<token>", text)
+            self.assertNotIn("SECRET", text)
+
+    def test_never_raises(self):
+        class Broken(Exception):
+            def __str__(self):
+                raise RuntimeError("no")
+
+        self.assertEqual(describe(Broken(), TOKEN), "Broken")
 
 
 class Outbox(unittest.TestCase):

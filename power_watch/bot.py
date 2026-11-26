@@ -111,5 +111,5 @@ class Commands:
                 log.warning("bot: getUpdates HTTP %s %s", e.code, error_detail(e).get("description", ""))
                 time.sleep(30)
             except Exception as e:  # noqa: BLE001 — network down etc.; keep listening
-                log.warning("bot: getUpdates %s", type(e).__name__)
+                log.warning("bot: getUpdates %s", self.tg.describe(e))
                 time.sleep(15)

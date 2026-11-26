@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import tzinfo
@@ -63,6 +64,11 @@ def from_env(env: Mapping[str, str] | None = None) -> Config:
         allowed = frozenset(int(u) for u in get("POWER_WATCH_ALLOWED_USERS").replace(",", " ").split())
     except ValueError:
         raise ConfigError("POWER_WATCH_ALLOWED_USERS must be numeric Telegram user ids, comma-separated") from None
+    token = get("TELEGRAM_BOT_TOKEN")
+    if token and not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", token):
+        # Never echo it. A malformed token (a "# comment" after it, a stray tab) would also slip
+        # past the log scrubbing, because the error messages quote it escaped or cut short.
+        raise ConfigError("TELEGRAM_BOT_TOKEN must look like 123456:ABC-def_... (comments on their own line)")
     purifier_token = get("POWER_WATCH_PURIFIER_TOKEN").lower()
     if purifier_token and (len(purifier_token) != 32 or any(c not in "0123456789abcdef" for c in purifier_token)):
         raise ConfigError("POWER_WATCH_PURIFIER_TOKEN must be 32 hex digits")
@@ -79,7 +85,7 @@ def from_env(env: Mapping[str, str] | None = None) -> Config:
             raise ConfigError(f"POWER_WATCH_TZ={get('POWER_WATCH_TZ')!r} is not a known time zone") from None
     return Config(
         device=ip("POWER_WATCH_DEVICE_IP"),
-        token=get("TELEGRAM_BOT_TOKEN"),
+        token=token,
         chat=get("TELEGRAM_CHAT_ID"),
         allowed=allowed,
         lang=lang,
